@@ -1,0 +1,3 @@
+0 start 0 10 1
+1 start 1 5 2
+2 renice 1 0 0

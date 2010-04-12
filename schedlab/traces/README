@@ -1,0 +1,45 @@
+Traces:
+=======
+
+ 1 deadlock     deadlock: simulation should not finish
+ 2 priority-1   process 1 should run first
+ 3 priority-2   process 0 should run until process 1 starts
+ 4 priority-3   process 0 should run until process 1 starts and after 1 renices
+                (after 2 slots)
+ 5 inversion    - standard: 0 runs and locks 0, 1 runs tries to lock 0 and waits,
+                  1 starts and preempts 0
+                - priority inheritance:  0 runs and locks 0, 1 runs and tries to
+                  lock 0 and waits (at this point process 0 should be reniced to
+                  the same priority as process 1), 1 starts but waits for 0 and
+                  1 to finish
+ 6 random-1    random trace 10 processes
+ 7 random-2    random trace 100 processes
+ 8 random-3    random trace 1000 processes
+ 9 random-4    random tracd 10 short processes
+10 length      1 long process 9 short processes
+11 idle        idle CPU  
+
+Example results:
+================
+
+trace time    art     att     awt  CPU
+----------------------------------------
+ 1       -      -       -       -  100%
+ 2      20    5.0    15.0     0.0  100%
+ 3      13    0.0     8.0     0.0  100%
+ 4      15    0.0    13.0     0.0  100%
+ 5      30    5.7    22.3     5.7  100%
+ 6     534   26.4   204.4    44.5   99%
+ 7    5949    3.3  2875.2  2614.5  100%
+ 8   59072 6928.0 19072.7 11509.8  100%
+ 9     134    9.1    40.2     6.2   90%
+10    1009    4.5   105.4     0.0  100%
+11    3100    0.0    55.0     0.0    4%
+
+Legend:
+
+time: total simulation time
+art:  average response time
+att:  average turnaround time
+awt:  average waiting time
+CPU:  CPU utilization
