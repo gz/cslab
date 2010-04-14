@@ -1,0 +1,21 @@
+./fstest issues a series of operations (open, read, write, ...) on the
+specified FAT image. The commands are read from a command file
+(image.img.command) and have the following syntax:
+
+File        := { CommandLine }.
+CommandLine := { Command ID ' ' Argument }.
+Command     := 'o'|'c'|'r'.
+ID          := '0'|...|'9'.
+Argument    := FileName
+
+Commands:
+o: open 'Argument'
+c: close
+r: read 'Argument' bytes 
+
+
+Examples:
+
+* 'o1 FILE.TXT' opens file FILE.TXT with and assigns the file descriptor 1
+* 'r1 1000' reads 1000 bytes from file descriptor 1
+
