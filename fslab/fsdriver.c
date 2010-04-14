@@ -18,6 +18,7 @@
 // Some basic types & macros
 typedef int boolean;
 typedef unsigned char* data_ptr;
+typedef unsigned int uint;
 typedef struct dos_dir_entry* directory_entry;
 #define TRUE 1
 #define FALSE 0
@@ -47,6 +48,35 @@ static int next_file_slot = 0; // determines where in the file table we currentl
 static int fat_size = 0; // in bytes
 
 
+/** Writes data at new_fat in FAT`which`.
+ * @param which FAT to write to.
+ * @param new_fat new FAT table data
+ */
+static void write_fat(uint which, data_ptr new_fat) {
+	assert(fbs.fats >= which); // FAT must exist
+
+	// determine which fat to write (FAT1 is at offset fbs.reserved)
+	int fat_index = which-1;
+	int fat_start_sector = fbs.reserved + fat_index*fbs.fat_length;
+
+	int sector;
+	for(sector=0; sector<fbs.fat_length; sector++) {
+		bios_write(fat_start_sector+sector, new_fat + sector*fbs.sector_size);
+	}
+
+}
+
+
+/** This is just a helper function which writes new_fat in all existing FATs.
+ *  @param new_fat data to write in all FATs.
+ */
+static void write_all_fats(data_ptr new_fat) {
+	int fat_nr;
+	for(fat_nr=1; fat_nr <= fbs.fats; fat_nr++)
+		write_fat(fat_nr, new_fat);
+}
+
+
 
 /** Loads data of FAT{1,2,3...}.
  *  @param which tells the function to load FAT1 (which = 1) or FAT2 (which = 2) etc.
@@ -54,7 +84,7 @@ static int fat_size = 0; // in bytes
  *  note: this function works for an arbitrarily number of FATs but
  *  our images have 2 in general.
  */
-static data_ptr load_fat(int which) {
+static data_ptr load_fat(uint which) {
 	assert(fbs.fats >= which); // FAT must exist
 
 	data_ptr fat = malloc(fat_size);
@@ -63,9 +93,9 @@ static data_ptr load_fat(int which) {
 	int fat_index = which-1;
 	int fat_start_sector = fbs.reserved + fat_index*fbs.fat_length;
 
-	int i;
-	for(i=0; i < fbs.fat_length; i++) {
-		bios_read(fat_start_sector+i, fat+i*fbs.sector_size);
+	int sector;
+	for(sector=0; sector<fbs.fat_length; sector++) {
+		bios_read(fat_start_sector+sector, fat + sector*fbs.sector_size);
 	}
 
 	return fat;
