@@ -52,21 +52,20 @@ static int fat_size = 0; // in bytes
  *  our images have 2 in general.
  */
 static data_ptr load_fat(int which) {
-	assert(fbs.fats >= which); // FAT table must exist
+	assert(fbs.fats >= which); // FAT must exist
 
-	data_ptr fat_table = malloc(fat_size);
+	data_ptr fat = malloc(fat_size);
 
-	// determine which fat table to load (FAT1 is at offset fbs.reserved)
-	int fat_table_index = which-1;
-	int fat_start_sector = fbs.reserved + fat_table_index*fbs.fat_length;
+	// determine which fat to load (FAT1 is at offset fbs.reserved)
+	int fat_index = which-1;
+	int fat_start_sector = fbs.reserved + fat_index*fbs.fat_length;
 
 	int i;
 	for(i=0; i < fbs.fat_length; i++) {
-		bios_read(fat_start_sector+i, fat_table+i*fbs.sector_size);
+		bios_read(fat_start_sector+i, fat+i*fbs.sector_size);
 	}
 
-	return fat_table;
-
+	return fat;
 }
 
 
@@ -106,7 +105,7 @@ void fs_init() {
 
 	assert(fbs.fats >= 1); // we need at least 1 FAT
 	FAT1 = load_fat(1);
-	FAT2 = load_fat(2);
+	//FAT2 = load_fat(2);
 
 	// Print some information useful for debugging
 	DEBUG_PRINT("system id: %.8s\n", fbs.system_id);
