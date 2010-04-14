@@ -36,7 +36,9 @@ typedef unsigned char* data_ptr;
 #define GET_TWO_BYTES(ptr)  ((__u16) (*(__u16*) (ptr)))
 #define GET_ONE_BYTE(ptr)   ((__u8 ) (*(__u8 *) (ptr)))
 
-// Global Variables
+// Global Definitions & Variables
+#define BIOS_READ_WRITE_SIZE 512 // in bytes
+
 static int root_dir_start_sector = 0; // first sector of the root directory
 static int root_dir_sectors = 0; // # of sectors reserved for root directory
 static int cluster_size = 0; // in bytes
@@ -48,7 +50,7 @@ static int fat_size = 0; // in bytes
 /** Loads data of FAT{1,2,3...}.
  *  @param which tells the function to load FAT1 (which = 1) or FAT2 (which = 2) etc.
  *  @return allocated chunk of memory containing the FAT table.
- *  note: this function works for an arbitrarly number of FATs but
+ *  note: this function works for an arbitrarily number of FATs but
  *  our images have 2 in general.
  */
 static data_ptr load_fat(int which) {
@@ -74,7 +76,7 @@ static data_ptr load_fat(int which) {
  *  Sector Struct).
  */
 void fs_init() {
-	char boot_sector[512];
+	char boot_sector[BIOS_READ_WRITE_SIZE];
 	bios_read(0, boot_sector);
 
 	// set ignored (3 bytes)
@@ -97,6 +99,10 @@ void fs_init() {
 	fbs.hidden       = GET_FOUR_BYTES(boot_sector+28);
 	fbs.total_sect   = GET_FOUR_BYTES(boot_sector+32);
 
+	// This code makes the assumption that bios_read (reads 512 bytes)
+	// corresponds to exactly 1 FAT12 sector.
+	assert(fbs.sector_size == BIOS_READ_WRITE_SIZE);
+
 	// Initializing global variables
 	cluster_size = fbs.sector_size * fbs.sec_per_clus;
 	root_dir_start_sector = (fbs.reserved + (fbs.fats * fbs.fat_length));
@@ -115,7 +121,7 @@ void fs_init() {
 	DEBUG_PRINT("sector count: %d\n", fbs.sectors);
 	DEBUG_PRINT("root dir entrys: %d\n", fbs.dir_entries);
 	DEBUG_PRINT("sectors per cluster: %d\n", fbs.sec_per_clus);
-	DEBUG_PRINT("root dir start sector: %d\n", root_dir_start);
+	DEBUG_PRINT("root dir start sector: %d\n", root_dir_start_sector);
 	DEBUG_PRINT("root dir sector length: %d\n", root_dir_sectors);
 
 }
