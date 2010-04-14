@@ -18,6 +18,7 @@
 // Some basic types & macros
 typedef int boolean;
 typedef unsigned char* data_ptr;
+typedef struct dos_dir_entry* directory_entry;
 #define TRUE 1
 #define FALSE 0
 #define max(x, y) ((x) > (y) ? (x) : (y))
