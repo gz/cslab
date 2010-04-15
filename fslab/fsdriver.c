@@ -88,6 +88,31 @@ static int cluster_size = 0; 			// in bytes
 static int fat_size = 0; 				// in bytes
 
 
+
+/** Loads data of FAT{1,2,3...}.
+ *  @param which tells the function to load FAT1 (which = 1) or FAT2 (which = 2) etc.
+ *  @return allocated chunk of memory containing the FAT table.
+ *  note: this function works for an arbitrarily number of FATs but
+ *  our images have 2 in general.
+ */
+static data_ptr load_fat(uint which) {
+	assert(fbs.fats >= which); // FAT must exist
+
+	data_ptr fat = malloc(fat_size);
+
+	// determine which fat to load (FAT1 is at offset fbs.reserved)
+	int fat_index = which-1;
+	int fat_start_sector = fbs.reserved + fat_index*fbs.fat_length;
+
+	int sector;
+	for(sector=0; sector<fbs.fat_length; sector++) {
+		bios_read(fat_start_sector+sector, fat + sector*fbs.sector_size);
+	}
+
+	return fat;
+}
+
+
 /** Writes data at new_fat in FAT`which`.
  * @param which FAT to write to.
  * @param new_fat new FAT table data
@@ -117,30 +142,40 @@ static void write_all_fats(data_ptr new_fat) {
 }
 
 
-
-/** Loads data of FAT{1,2,3...}.
- *  @param which tells the function to load FAT1 (which = 1) or FAT2 (which = 2) etc.
- *  @return allocated chunk of memory containing the FAT table.
- *  note: this function works for an arbitrarily number of FATs but
- *  our images have 2 in general.
+/** Loads the root directory and returns its content.
+ *  @return contents of the root directory
  */
-static data_ptr load_fat(uint which) {
-	assert(fbs.fats >= which); // FAT must exist
+static data_ptr load_root_directory() {
+	// Note the allocation size of at least cluster size is a bit of a hack here
+	// since we can then use the same buffer in `get_file_handle` for other directories
+	data_ptr root_dir_data = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
 
-	data_ptr fat = malloc(fat_size);
+	int i;
+	for(i=0; i<root_dir_sectors; i++) {
+		char sector_data[fbs.sector_size]; // buffer for current file sector
+		bios_read(root_dir_start_sector+i, sector_data);
 
-	// determine which fat to load (FAT1 is at offset fbs.reserved)
-	int fat_index = which-1;
-	int fat_start_sector = fbs.reserved + fat_index*fbs.fat_length;
-
-	int sector;
-	for(sector=0; sector<fbs.fat_length; sector++) {
-		bios_read(fat_start_sector+sector, fat + sector*fbs.sector_size);
+		memcpy(root_dir_data+(i*fbs.sector_size), sector_data, fbs.sector_size);
 	}
 
-	return fat;
+	return root_dir_data;
 }
 
+
+/** Saves the root directory to disk.
+ * @param root_directory content of the root directory
+ */
+static void write_root_directory(data_ptr root_directory) {
+
+	int i;
+	for(i=0; i<root_dir_sectors; i++) {
+		char root_dir_sector[fbs.sector_size]; // buffer for current file sector
+		memcpy(root_dir_sector, root_directory + (i*fbs.sector_size), fbs.sector_size);
+
+		bios_write(root_dir_start_sector+i, root_dir_sector);
+	}
+
+}
 
 
 /** Loads cluster data identified by `number` into `buffer`.
@@ -239,42 +274,6 @@ static int find_free_file_slot() {
 }
 
 
-/** Loads the root directory and returns its content.
- *  @return contents of the root directory
- */
-static data_ptr load_root_directory() {
-	// Note the allocation size of at least cluster size is a bit of a hack here
-	// since we can then use the same buffer in `get_file_handle` for other directories
-	data_ptr root_dir_data = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
-
-	int i;
-	for(i=0; i<root_dir_sectors; i++) {
-		char sector_data[fbs.sector_size]; // buffer for current file sector
-		bios_read(root_dir_start_sector+i, sector_data);
-
-		memcpy(root_dir_data+(i*fbs.sector_size), sector_data, fbs.sector_size);
-	}
-
-	return root_dir_data;
-}
-
-
-/** Saves the root directory to disk.
- * @param root_directory content of the root directory
- */
-static void save_root_directory(data_ptr root_directory) {
-
-	int i;
-	for(i=0; i<root_dir_sectors; i++) {
-		char root_dir_sector[fbs.sector_size]; // buffer for current file sector
-		memcpy(root_dir_sector, root_directory + (i*fbs.sector_size), fbs.sector_size);
-
-		bios_write(root_dir_start_sector+i, root_dir_sector);
-	}
-
-}
-
-
 /** Allocates and initializes a file handle for a given directory entry.
  * @param entry the corresponding directory entry
  * @return A file handle for the file.
@@ -323,7 +322,6 @@ static void convert_filename(const char* filename, char* fatname) {
  * @return pointer to the directory entry or NULL if no matching entry was found
  */
 static directory_entry_ptr get_directory_entry(data_ptr directory_data, const char* search_entry_name) {
-	DEBUG_PRINT("get entry %s\n", search_entry_name);
 
 	char fat_search_name[MAX_FILENAME_LENGTH];
 	convert_filename(search_entry_name, fat_search_name); // this is the name we have to search for in entries
@@ -331,7 +329,6 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 	directory_entry_ptr current_entry = (directory_entry_ptr) directory_data;
 	while(current_entry->name[0] != 0x0) {
 
-		DEBUG_PRINT("reading directory entry: %s\n", current_entry->name);
 		// ignore empty entries & long file names
 		if( (*((data_ptr) current_entry) == 0xE5) && (current_entry->attr == 0x0F))
 			continue;
@@ -341,7 +338,6 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 		sprintf(current_entry_name, "%.8s.%.3s", current_entry->name, current_entry->ext);
 
 		if(strcmp(current_entry_name, fat_search_name) == 0) {
-			DEBUG_PRINT("found match on %s\n", current_entry->name);
 			return current_entry;
 		}
 
@@ -368,9 +364,9 @@ static file_handle get_file_handle(const char *p) {
 	char* current_name_token;
 	current_name_token = strtok(path, "/");
 	directory_entry_ptr current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
+
 	boolean searching = TRUE;
 	do {
-		DEBUG_PRINT("searching for: %s\n", current_name_token);
 		current_entry = get_directory_entry(current_directory_data, current_name_token);
 
 		if( IS_FILE(current_entry) && (strtok(NULL, "/") == NULL) ) {
@@ -391,7 +387,9 @@ static file_handle get_file_handle(const char *p) {
 			}
 		}
 
-		searching = FALSE; // if we come here something went wrong
+		// if we come here we have a file located in our path where
+		// we should have a directory (e.g. C:\Dir\File.txt\Dir\File.txt)
+		searching = FALSE;
 
 	} while( searching );
 
