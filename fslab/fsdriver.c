@@ -32,12 +32,13 @@ typedef unsigned int uint;
 typedef unsigned char* data_ptr;
 
 // Types needed for our FAT Implementation
-typedef struct dos_dir_entry* directory_entry;
+typedef struct dos_dir_entry* directory_entry_ptr;
 
 // internal file handle representation
 struct file_table_entry {
 	int pos;
-	char* buffer;
+	int buffer_size;
+	data_ptr buffer;
 	int dir_cluster_nr; // this is the cluster where the corresponding file entry for this file is
 						// if dir_cluster_nr == 0: then, this file is in the root dir
 	struct dos_dir_entry directory_entry;
@@ -61,11 +62,14 @@ typedef struct file_table_entry* file_handle;
 
 // Global Definitions & Variables
 #define max(x, y) ((x) > (y) ? (x) : (y))
+#define min(x, y) ((x) < (y) ? (x) : (y))
 #define IS_DIRECTORY(entry) ( ((entry) != NULL) && ((entry)->attr & FILE_ATTR_DIRECTORY) )
-#define IS_FILE(entry) ( ((entry) != NULL) && !((entry)->attr & FILE_ATTR_DIRECTORY) )
+#define IS_FILE(entry)      ( ((entry) != NULL) && !((entry)->attr & FILE_ATTR_DIRECTORY) )
+#define IS_LAST_CLUSTER(c)  ( (c) >= 0xFF7 )
+#define IS_ODD_NUMBER(n)    ( (n) & 0x1 )
 #define BIOS_READ_WRITE_SIZE 512 		// in bytes
-#define MAX_FILENAME_LENGTH 13  		// filename (8 bytes) + dot (1byte) + extension (3 bytes)
-#define MAX_PATH_LENGTH 255
+#define MAX_FILENAME_LENGTH   13  		// filename (8 bytes) + dot (1byte) + extension (3 bytes)
+#define MAX_PATH_LENGTH      255
 
 static int root_dir_start_sector = 0; 	// first sector of the root directory
 static int root_dir_sectors = 0;		// # of sectors reserved for root directory
@@ -243,7 +247,7 @@ static void save_root_directory(data_ptr root_directory) {
  * @param entry the corresponding directory entry
  * @return A file handle for the file.
  */
-static file_handle create_file_handle(directory_entry entry) {
+static file_handle create_file_handle(directory_entry_ptr entry) {
 
 	file_handle fh = malloc( sizeof(struct file_table_entry) );
 	fh->pos = 0;
@@ -286,12 +290,12 @@ static void convert_filename(const char* filename, char* fatname) {
  * @param entry_name name to search for
  * @return pointer to the directory entry or NULL if no matching entry was found
  */
-static directory_entry get_directory_entry(data_ptr directory_data, const char* search_entry_name) {
+static directory_entry_ptr get_directory_entry(data_ptr directory_data, const char* search_entry_name) {
 
 	char fat_search_name[MAX_FILENAME_LENGTH];
 	convert_filename(search_entry_name, fat_search_name); // this is the name we have to search for in entries
 
-	directory_entry current_entry = (directory_entry) directory_data;
+	directory_entry_ptr current_entry = (directory_entry_ptr) directory_data;
 	while(current_entry->name[0] != 0x0) {
 
 		DEBUG_PRINT("reading directory entry: %s\n", current_entry->name);
@@ -330,7 +334,7 @@ static file_handle get_file_handle(const char *p) {
 	data_ptr current_directory_data = root_directory;
 	char* current_name_token;
 	current_name_token = strtok(path, "/");
-	directory_entry current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
+	directory_entry_ptr current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
 
 	do {
 		current_entry = get_directory_entry(current_directory_data, current_name_token);
@@ -380,23 +384,134 @@ int fs_open(const char *p) {
 }
 
 
-/** Closes a file. Frees resources in the file_table.
+/** Closes a file. Frees resources in the file_table and the internal buffer.
  *	This function assumes that fd is a valid file descriptor.
  *	@param fd file descriptor previously handed out to clients by fs_open.
  */
 void fs_close(int fd) {
-	assert(file_table[fd] != NULL);
+	assert(fd >= 0 && fd < MAX_FILES);
 
-	free(file_table[fd]);
-	file_table[fd] = NULL;
+	if(file_table[fd] != NULL) {
+		file_handle fh = file_table[fd];
+
+		if(fh->buffer != NULL)
+			free(fh->buffer);
+
+		free(fh);
+		file_table[fd] = NULL;
+	}
 }
 
 
-/* reads from a file len bytes into the buffer */
-int fs_read(int fd, void *buffer, int len)
-{
-  return -1;
+/** Loads cluster data identified by `number` into `buffer`.
+ *  @param number cluster to load
+ *  @param buffer to write contents in
+ */
+static void load_cluster(uint number, data_ptr buffer) {
+
+	// internally we work with cluster numbers from 0 to n-2 to calculate the offset
+	number = number - 2;
+	int cluster_start_sector = (root_dir_start_sector + root_dir_sectors) + (number * fbs.sec_per_clus);
+
+	int i;
+	for(i=0; i<fbs.sec_per_clus; i++) {
+		bios_read(cluster_start_sector+i, buffer + (fbs.sector_size*i));
+	}
+
 }
+
+
+/** Gets the number of the next cluster for `active_cluster`.
+ *  We work only with FAT1 here.
+ *  FAT12 means we have 12 bits per cluster number which
+ *  really means that in 3 bytes (24 bits) we have 2 cluster
+ *  numbers stored. So we have to multiply our active cluster
+ *  by 1.5 to get the correct offset in the fat table, and do
+ *  some bit shifting to get the correct number in the end.
+ *  @param cluster_nr number of the current cluster
+ */
+static int get_next_cluster_nr(int cluster_nr) {
+	int fat_offset = cluster_nr + (cluster_nr / 2); // multiply by 1.5 [3 bytes per 2 cluster]
+
+	unsigned short next_cluster_nr = *(unsigned short*)&FAT1[fat_offset];
+
+	if(IS_ODD_NUMBER(cluster_nr)) {
+		next_cluster_nr = next_cluster_nr >> 4;
+	}
+	else {
+		next_cluster_nr = next_cluster_nr & 0x0FFF;
+	}
+
+	return next_cluster_nr;
+}
+
+
+/** Loads the contents of a file from disk into the file handle buffer.
+ *  If the buffer is non null then the function will free the buffer
+ *  and replace it with the newly allocated one.
+ *  Loading a file works by walking through the cluster chain
+ *  using get_next_cluster. The buffer size is expanded as long as we
+ *  have more clusters to load. Note that realloc with a null pointer
+ *  is equivalent to calling malloc.
+ *  @param file handle to load content for
+ */
+static void load_file_contents(file_handle fh) {
+
+	if(fh->buffer != NULL) {
+		free(fh->buffer);
+		fh->buffer = NULL;
+	}
+
+	int current_cluster_nr = fh->directory_entry.start;
+	int i = 0;
+	while(!IS_LAST_CLUSTER(current_cluster_nr)) {
+
+		fh->buffer = realloc(fh->buffer, cluster_size*(i+1));
+
+		char cluster_data[cluster_size];
+		load_cluster(current_cluster_nr, cluster_data);
+		memcpy(fh->buffer+(i++*cluster_size), cluster_data, cluster_size);
+
+		current_cluster_nr = get_next_cluster_nr(current_cluster_nr);
+
+	}
+
+}
+
+
+/** Reads `len` bytes from a file into the `buffer`.
+ *  This function loads the content of a file from disk to memory (fh->buffer)
+ *  if not already done before.
+ *  The limitation here is that we load the whole file no matter how big it is or
+ *  how much we really read from it.
+ *	@param fd file descriptor identifying the file in the file_table
+ *	@param buffer to write to
+ *	@param len number of bytes to read
+ *	@return number of bytes read (can be less than `len` if file size - current seek position
+ *			is less than len)
+ */
+int fs_read(int fd, void *buffer, int len) {
+	assert(fd >= 0 && fd < MAX_FILES);
+
+	file_handle fh = file_table[fd];
+
+	if(fh != NULL) {
+
+		// lazy loading file contents on first read
+		if(fh->buffer == NULL)
+			load_file_contents(fh);
+
+		// make sure we don't want to read more than we can
+		int bytes_to_read = min(len, fh->directory_entry.size - fh->pos);
+		memcpy(buffer, fh->buffer+fh->pos, bytes_to_read);
+
+		fh->pos += bytes_to_read; // update position in file handle
+		return bytes_to_read;
+	}
+
+	return -1; // invalid file descriptor
+}
+
 
 /* creates a file */
 int fs_creat(const char *p)
