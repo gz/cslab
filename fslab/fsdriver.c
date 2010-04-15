@@ -222,6 +222,7 @@ static data_ptr load_root_directory() {
 	return root_dir_data;
 }
 
+
 /** Saves the root directory to disk.
  * @param root_directory content of the root directory
  */
@@ -236,6 +237,7 @@ static void save_root_directory(data_ptr root_directory) {
 	}
 
 }
+
 
 /** Allocates and initializes a file handle for a given directory entry.
  * @param entry the corresponding directory entry
@@ -256,6 +258,7 @@ static file_handle create_file_handle(directory_entry entry) {
 
 /** Pads `filename` with spaces "FILE" becomes -> "FILE    " and
  *  stores it in `fatname`.
+ *  Note: This could probably be done easier?
  *  This assumes that filename is not longer than MAX_FILENAME_LENGTH
  *  @param filename filename to transform
  *  @param fatname transformed name, conforms to name in directory entries.
@@ -271,7 +274,8 @@ static void convert_filename(const char* filename, char* fatname) {
 
 	int pch_len = (pch == NULL) ? 0 : strlen(pch);
 	memcpy(name, filename, len-pch_len);
-	memcpy(ext, filename+len-pch_len, pch_len);
+	if(pch)
+		memcpy(ext, filename+len-(pch_len-1), pch_len-1);
 
 	sprintf(fatname, "%.8s.%.3s", name, ext);
 }
@@ -306,7 +310,7 @@ static directory_entry get_directory_entry(data_ptr directory_data, const char* 
 		current_entry++;
 	}
 
-	return NULL; // matching entry not found
+	return NULL; // no matching entry found
 }
 
 
@@ -331,13 +335,10 @@ static file_handle get_file_handle(const char *p) {
 	do {
 		current_entry = get_directory_entry(current_directory_data, current_name_token);
 
-		if( IS_FILE(current_entry) ) {
-
-			// TODO: check that (strtok(NULL, "/") == NULL
+		if( IS_FILE(current_entry) && (strtok(NULL, "/") == NULL) ) {
 			// we have found the file we're searching for
 			fh = create_file_handle(current_entry);
 			break;
-
 		}
 		else if(IS_DIRECTORY( current_entry )) {
 			current_name_token = strtok(NULL, "/");
@@ -378,10 +379,18 @@ int fs_open(const char *p) {
 
 }
 
-/* closes a file */
-void fs_close(int fd) {
 
+/** Closes a file. Frees resources in the file_table.
+ *	This function assumes that fd is a valid file descriptor.
+ *	@param fd file descriptor previously handed out to clients by fs_open.
+ */
+void fs_close(int fd) {
+	assert(file_table[fd] != NULL);
+
+	free(file_table[fd]);
+	file_table[fd] = NULL;
 }
+
 
 /* reads from a file len bytes into the buffer */
 int fs_read(int fd, void *buffer, int len)
