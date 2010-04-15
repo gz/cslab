@@ -1,9 +1,20 @@
 /* FAT12 Driver
  * ====================
+ * This is a simple FAT12 driver implementation. We have
+ * functions for opening, closing, creating and reading and writing
+ * to files. On fs_open a corresponding `file_table_entry` struct will
+ * be created to keep track of the associated information for the file.
+ * On the first fs_read call the buffer in the file_table_entry is loaded
+ * with the file contents and the bytes we want to read are copied in the
+ * client buffer.
+ * On a fs_write call we overwrite the buffer and write it to disk (including
+ * updating the corresponding `directory_entry`).
+ * Calls to fs_creat create a new `directory_entry` in the corresponding directory.
  *
  * Known Limitations
  * ====================
- * - The code does not handle long file names
+ * - The code does not handle long file names.
+ * - Code can not create directories.
  * - The path length is limited to 255 characters since strtok cannot handle const char* directly
  * - The code assumes that every non-root directory only has one cluster.
  *   This limits the number of files per directory to sizeof(dos_dir_entry) / cluster_size.
@@ -11,7 +22,7 @@
  *   of the corresponding directory table.
  * - We do not update file access and creation dates and times of directory entries.
  *
- * Authors:
+ * Authors
  * ====================
  * team07:
  * Boris Bluntschli (borisb@student.ethz.ch)
@@ -131,6 +142,25 @@ static data_ptr load_fat(uint which) {
 }
 
 
+
+/** Loads cluster data identified by `number` into `buffer`.
+ *  @param number cluster to load
+ *  @param buffer to write contents in
+ */
+static void load_cluster(uint number, data_ptr buffer) {
+
+	// internally we work with cluster numbers from 0 to n-2 to calculate the offset
+	number = number - 2;
+	int cluster_start_sector = (root_dir_start_sector + root_dir_sectors) + (number * fbs.sec_per_clus);
+
+	int i;
+	for(i=0; i<fbs.sec_per_clus; i++) {
+		bios_read(cluster_start_sector+i, buffer + (fbs.sector_size*i));
+	}
+
+}
+
+
 /** Initialization at the beginning. This reads out the
  *  first sector in our disk and initializes the fbs (First Boot
  *  Sector Struct).
@@ -213,7 +243,9 @@ static int find_free_file_slot() {
  *  @return contents of the root directory
  */
 static data_ptr load_root_directory() {
-	data_ptr root_dir_data = malloc(root_dir_sectors*fbs.sector_size);
+	// Note the allocation size of at least cluster size is a bit of a hack here
+	// since we can then use the same buffer in `get_file_handle` for other directories
+	data_ptr root_dir_data = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
 
 	int i;
 	for(i=0; i<root_dir_sectors; i++) {
@@ -291,6 +323,7 @@ static void convert_filename(const char* filename, char* fatname) {
  * @return pointer to the directory entry or NULL if no matching entry was found
  */
 static directory_entry_ptr get_directory_entry(data_ptr directory_data, const char* search_entry_name) {
+	DEBUG_PRINT("get entry %s\n", search_entry_name);
 
 	char fat_search_name[MAX_FILENAME_LENGTH];
 	convert_filename(search_entry_name, fat_search_name); // this is the name we have to search for in entries
@@ -308,6 +341,7 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 		sprintf(current_entry_name, "%.8s.%.3s", current_entry->name, current_entry->ext);
 
 		if(strcmp(current_entry_name, fat_search_name) == 0) {
+			DEBUG_PRINT("found match on %s\n", current_entry->name);
 			return current_entry;
 		}
 
@@ -325,37 +359,44 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 static file_handle get_file_handle(const char *p) {
 
 	file_handle fh = NULL; // will be set with the file if we find it
-	data_ptr root_directory = load_root_directory();
 
 	char path[MAX_PATH_LENGTH];
 	strcpy(path, p);
 
 	// Now we walk down the directory tree until we find the file we need
-	data_ptr current_directory_data = root_directory;
+	data_ptr current_directory_data = load_root_directory();
 	char* current_name_token;
 	current_name_token = strtok(path, "/");
 	directory_entry_ptr current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
-
+	boolean searching = TRUE;
 	do {
+		DEBUG_PRINT("searching for: %s\n", current_name_token);
 		current_entry = get_directory_entry(current_directory_data, current_name_token);
 
 		if( IS_FILE(current_entry) && (strtok(NULL, "/") == NULL) ) {
 			// we have found the file we're searching for
 			fh = create_file_handle(current_entry);
+			searching = FALSE;
 			break;
 		}
 		else if(IS_DIRECTORY( current_entry )) {
 			current_name_token = strtok(NULL, "/");
 			if(current_name_token != NULL) {
-				DEBUG_PRINT("TODO: find file out of the root dir.");
-				break;
+				// this only works since we assume directory size does never exceed 1 cluster
+				load_cluster(current_entry->start, current_directory_data);
+				continue;
+			}
+			else {
+				searching = FALSE; // our path ends with a directory
 			}
 		}
 
-	} while( IS_DIRECTORY(current_entry) );
+		searching = FALSE; // if we come here something went wrong
+
+	} while( searching );
 
 
-	free(root_directory);
+	free(current_directory_data);
 	return fh;
 }
 
@@ -400,24 +441,6 @@ void fs_close(int fd) {
 		free(fh);
 		file_table[fd] = NULL;
 	}
-}
-
-
-/** Loads cluster data identified by `number` into `buffer`.
- *  @param number cluster to load
- *  @param buffer to write contents in
- */
-static void load_cluster(uint number, data_ptr buffer) {
-
-	// internally we work with cluster numbers from 0 to n-2 to calculate the offset
-	number = number - 2;
-	int cluster_start_sector = (root_dir_start_sector + root_dir_sectors) + (number * fbs.sec_per_clus);
-
-	int i;
-	for(i=0; i<fbs.sec_per_clus; i++) {
-		bios_read(cluster_start_sector+i, buffer + (fbs.sector_size*i));
-	}
-
 }
 
 
@@ -501,7 +524,7 @@ int fs_read(int fd, void *buffer, int len) {
 		if(fh->buffer == NULL)
 			load_file_contents(fh);
 
-		// make sure we don't want to read more than we can
+		// make sure we don't read more than we can
 		int bytes_to_read = min(len, fh->directory_entry.size - fh->pos);
 		memcpy(buffer, fh->buffer+fh->pos, bytes_to_read);
 
