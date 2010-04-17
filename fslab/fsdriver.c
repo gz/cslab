@@ -79,6 +79,7 @@ typedef struct file_table_entry* file_handle;
 #define IS_FILE(entry)      ( ((entry) != NULL) && !((entry)->attr & FILE_ATTR_DIRECTORY) )
 #define IS_LAST_CLUSTER(c)  ( (c) >= 0xFF7 )
 #define IS_ODD_NUMBER(n)    ( (n) & 0x1 )
+#define IS_VALID_ENTRY(c)   ( (c)->name[0] != 0x0 )
 #define BIOS_READ_WRITE_SIZE 512 		// in bytes
 #define MAX_FILENAME_LENGTH   13  		// filename (8 bytes) + dot (1byte) + extension (3 bytes)
 #define MAX_PATH_LENGTH      255
@@ -328,7 +329,7 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 	convert_filename(search_entry_name, fat_search_name); // this is the name we have to search for in entries
 
 	directory_entry_ptr current_entry = (directory_entry_ptr) directory_data;
-	while(current_entry->name[0] != 0x0) {
+	while(IS_VALID_ENTRY(current_entry)) {
 
 		// ignore empty entries & long file names
 		if( (*((data_ptr) current_entry) == 0xE5) && (current_entry->attr == 0x0F))
@@ -551,7 +552,9 @@ int fs_read(int fd, void *buffer, int len) {
 	file_handle fh = file_table[fd];
 	if(fh != NULL) {
 
-		free_file_buffer(fh);
+		// lazy loading file contents on first read
+		if(fh->buffer == NULL)
+			load_file_contents(fh);
 
 		// make sure we don't read more than we can
 		int bytes_to_read = min(len, fh->directory_entry.size - fh->pos);
