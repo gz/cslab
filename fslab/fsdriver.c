@@ -44,6 +44,7 @@ typedef unsigned char data;
 typedef unsigned char* data_ptr;
 
 // Types needed for our FAT Implementation
+typedef struct dos_dir_entry  directory_entry;
 typedef struct dos_dir_entry* directory_entry_ptr;
 
 // internal file handle representation
@@ -75,15 +76,17 @@ typedef struct file_table_entry* file_handle;
 // Global Definitions & Variables
 #define max(x, y) ((x) > (y) ? (x) : (y))
 #define min(x, y) ((x) < (y) ? (x) : (y))
-#define IS_DIRECTORY(entry) ( ((entry) != NULL) && ((entry)->attr & FILE_ATTR_DIRECTORY) )
-#define IS_FILE(entry)      ( ((entry) != NULL) && !((entry)->attr & FILE_ATTR_DIRECTORY) )
-#define IS_LAST_CLUSTER(c)  ( (c) >= 0xFF7 )
-#define IS_ODD_NUMBER(n)    ( (n) & 0x1 )
-#define IS_VALID_ENTRY(c)   ( (c)->name[0] != 0x0 )
-#define LAST_CLUSTER		0xFFF
-#define BIOS_READ_WRITE_SIZE 512 		// in bytes
-#define MAX_FILENAME_LENGTH   13  		// filename (8 bytes) + dot (1byte) + extension (3 bytes)
-#define MAX_PATH_LENGTH      255
+#define IS_DIRECTORY(entry)   ( ((entry) != NULL) && ((entry)->attr & FILE_ATTR_DIRECTORY) )
+#define IS_FILE(entry)        ( ((entry) != NULL) && !((entry)->attr & FILE_ATTR_DIRECTORY) )
+#define IS_EMPTY_ENTRY(entry) ( (*((data_ptr) (entry)) == 0xE5) )
+#define IS_LAST_CLUSTER(c)    ( (c) >= 0xFF7 )
+#define IS_ODD_NUMBER(n)      ( (n) & 0x1 )
+#define IS_VALID_ENTRY(e)     ( (e)->name[0] != 0x0 )
+#define HAS_LONG_FILENAME(e)  ( (e)->attr == 0x0F)
+#define LAST_CLUSTER		  0xFFF
+#define BIOS_READ_WRITE_SIZE  512 		// in bytes
+#define MAX_FILENAME_LENGTH    13  		// filename (8 bytes) + dot (1byte) + extension (3 bytes)
+#define MAX_PATH_LENGTH       255
 
 static int root_dir_start_sector = 0; 	// first sector of the root directory
 static int root_dir_sectors = 0;		// # of sectors reserved for root directory
@@ -346,8 +349,7 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 	directory_entry_ptr current_entry = (directory_entry_ptr) directory_data;
 	while(IS_VALID_ENTRY(current_entry)) {
 
-		// ignore empty entries & long file names
-		if( (*((data_ptr) current_entry) == 0xE5) && (current_entry->attr == 0x0F))
+		if( IS_EMPTY_ENTRY(current_entry) && HAS_LONG_FILENAME(current_entry))
 			continue;
 
 		// generate entry name
@@ -617,7 +619,13 @@ static void write_file_contents(file_handle fh) {
 		if(IS_LAST_CLUSTER(current_cluster) && len > 0) {
 			// if we're out of clusters but still need to write stuff
 			// so we need to allocate a new cluster for this file
-			int new_cluster = find_free_cluster();
+			int new_cluster;
+			if( (new_cluster = find_free_cluster()) == -1 ) {
+				// TODO abort because there is no more disk space
+				//return len;
+			}
+			assert(new_cluster != -1);
+
 			set_next_cluster(current_cluster, new_cluster);
 			set_next_cluster(new_cluster, LAST_CLUSTER);
 			new_clusters_allocated = TRUE;
@@ -633,6 +641,9 @@ static void write_file_contents(file_handle fh) {
 	if(new_clusters_allocated)
 		write_all_fats(FAT1);
 
+	// TODO return actual bytes written
+	// return len;
+
 }
 
 
@@ -646,7 +657,8 @@ static void write_file_contents(file_handle fh) {
 static void update_directory_entry(file_handle fh) {
 	DEBUG_PRINT("Updating directory entry, loading cluster: %d\n", fh->directory_start_cluster);
 
-	data directory[cluster_size];
+	data_ptr directory = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
+
 	if(fh->directory_start_cluster > 0)
 		load_cluster(fh->directory_start_cluster, directory);
 	else
@@ -666,6 +678,8 @@ static void update_directory_entry(file_handle fh) {
 		write_cluster(fh->directory_start_cluster, directory);
 	else
 		write_root_directory(directory);
+
+	free(directory);
 }
 
 
@@ -703,12 +717,140 @@ int fs_read(int fd, void *buffer, int len) {
 }
 
 
-/* creates a file */
+/** Creates a new directory_entry struct and initializes it with
+ *  given values.
+ *  @return the initialized struct
+ */
+static directory_entry create_directory_entry(const char* entry_name) {
+
+	struct dos_dir_entry new_entry;
+
+	char fat_name[MAX_FILENAME_LENGTH];
+	convert_filename(entry_name, fat_name);
+	memcpy(new_entry.name, fat_name, 8);
+	memcpy(new_entry.ext, fat_name+9, 3);
+
+	new_entry.size = 0;
+	new_entry.attr = 0x00; // its a file we make
+
+	// we allocate one cluster for the file directly.
+	// this could probably be a problem if you have lots of empty files
+	// since this wastes a cluster for each of them
+	new_entry.start = find_free_cluster();
+	set_next_cluster(new_entry.start, LAST_CLUSTER);
+	write_all_fats(FAT1);
+
+	return new_entry;
+
+}
+
+/** Places `new_entry` in the first free spot in `directory_data`.
+ *  @param directory_data contents if directory
+ *  @param new_entry entry to add
+ *  @return pointer to the new directory entry.
+ *  Note: since we assume we always have space and there is a entry with
+ *  name 0x0 matching the end of the list, this function works - at least
+ *  for our cause.
+ */
+static directory_entry_ptr place_directory_entry(data_ptr directory_data, directory_entry new_entry) {
+
+	directory_entry_ptr current_entry = (directory_entry_ptr) directory_data;
+	while(IS_VALID_ENTRY(current_entry)) {
+		current_entry++;
+	}
+
+	*current_entry = new_entry;
+
+	return current_entry;
+
+}
+
+
+/** Places a directory entry for a given file with path `p`.
+ *  Assumes that directories already exists.
+ *	@param p path to the file we have to create an entry for
+ */
+static file_handle create_file_in_directory(const char *p) {
+
+	file_handle fh = NULL; // will be set with the file if we can create it
+
+	char path[MAX_PATH_LENGTH];
+	strcpy(path, p);
+
+	// Now we walk down the directory tree until we find the file we need
+	data_ptr current_directory_data = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
+	load_root_directory(current_directory_data);
+
+	char* current_name_token;
+	current_name_token = strtok(path, "/");
+	directory_entry_ptr current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
+	uint directory_start_cluster = 0;
+	boolean searching = TRUE;
+	do {
+		current_entry = get_directory_entry(current_directory_data, current_name_token);
+
+		if( current_entry == NULL && (strtok(NULL, "/") == NULL) ) {
+
+			// we're at the end of path and the given file does not exist...
+			directory_entry new_entry = create_directory_entry(current_name_token);
+			current_entry = place_directory_entry(current_directory_data, new_entry);
+
+			fh = create_file_handle(current_entry, directory_start_cluster);
+			if(directory_start_cluster > 0)
+				write_cluster(directory_start_cluster, current_directory_data);
+			else
+				write_root_directory(current_directory_data);
+
+			searching = FALSE;
+			break;
+		}
+		else if(IS_DIRECTORY( current_entry )) {
+			current_name_token = strtok(NULL, "/");
+			if(current_name_token != NULL) {
+				// this only works since we assume directory size does never exceed 1 cluster
+				directory_start_cluster = current_entry->start;
+				load_cluster(current_entry->start, current_directory_data);
+				continue;
+			}
+			else {
+				searching = FALSE; // our path ends with a directory
+			}
+		}
+
+		// if we come here we have a file located in our path where
+		// we should have a directory (e.g. C:\Dir\File.txt\Dir\File.txt)
+		searching = FALSE;
+
+	} while( searching );
+
+
+	free(current_directory_data);
+	return fh;
+
+}
+
+
+/** Creates a file located at path p.
+ *  This function assumes that the current directory structure already exists.
+ *  @param p path where to create the file
+ *  @return file descriptor to the newly opened file
+ */
 int fs_creat(const char *p)
 {
+	int fd;
 
+	if( (fd = find_free_file_slot()) == -1 )
+		return -1; // currently more than MAX_FILES open
 
-	return -1;
+	file_handle fh = create_file_in_directory(p);
+
+	if(fh != NULL) {
+		file_table[fd] = fh;
+		return fd;
+	}
+	else {
+		return -1; // could not create directory entry
+	}
 }
 
 
