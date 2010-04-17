@@ -426,6 +426,14 @@ int fs_open(const char *p) {
 }
 
 
+static void free_file_buffer(file_handle fh) {
+	if(fh->buffer != NULL) {
+		free(fh->buffer);
+		fh->buffer = NULL;
+	}
+}
+
+
 /** Closes a file. Frees resources in the file_table and the internal buffer.
  *	This function assumes that fd is a valid file descriptor.
  *	@param fd file descriptor previously handed out to clients by fs_open.
@@ -436,8 +444,7 @@ void fs_close(int fd) {
 	if(file_table[fd] != NULL) {
 		file_handle fh = file_table[fd];
 
-		if(fh->buffer != NULL)
-			free(fh->buffer);
+		free_file_buffer(fh);
 
 		free(fh);
 		file_table[fd] = NULL;
@@ -495,10 +502,7 @@ static int get_next_cluster_nr(int cluster_nr) {
  */
 static void load_file_contents(file_handle fh) {
 
-	if(fh->buffer != NULL) {
-		free(fh->buffer);
-		fh->buffer = NULL;
-	}
+	free_file_buffer(fh);
 
 	// walk through the clusters, copy their contents into fh->buffer
 	int current_cluster_nr = fh->directory_entry.start;
@@ -547,9 +551,7 @@ int fs_read(int fd, void *buffer, int len) {
 	file_handle fh = file_table[fd];
 	if(fh != NULL) {
 
-		// lazy loading file contents on first read
-		if(fh->buffer == NULL)
-			load_file_contents(fh);
+		free_file_buffer(fh);
 
 		// make sure we don't read more than we can
 		int bytes_to_read = min(len, fh->directory_entry.size - fh->pos);
@@ -570,14 +572,6 @@ int fs_creat(const char *p)
 
 
 	return -1;
-}
-
-
-static void free_file_buffer(file_handle fh) {
-	if(fh->buffer != NULL) {
-		free(fh->buffer);
-		fh->buffer = NULL;
-	}
 }
 
 
