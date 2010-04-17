@@ -286,7 +286,6 @@ static file_handle create_file_handle(directory_entry_ptr entry) {
 
 	memcpy(&fh->directory_entry, (data_ptr)entry, sizeof(struct dos_dir_entry));
 
-	//_load_file_data(fh);
 	return fh;
 }
 
