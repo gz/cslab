@@ -744,6 +744,7 @@ static directory_entry create_directory_entry(const char* entry_name) {
 
 }
 
+
 /** Places `new_entry` in the first free spot in `directory_data`.
  *  @param directory_data contents if directory
  *  @param new_entry entry to add
