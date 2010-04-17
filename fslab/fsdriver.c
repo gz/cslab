@@ -145,13 +145,12 @@ static void write_all_fats(data_ptr new_fat) {
 }
 
 
-/** Loads the root directory and returns its content.
- *  @return contents of the root directory
+/** Loads the root directory and stores its content in `buffer`.
+ *  Note: Clients have to make sure that the size of the buffer is
+ *  at least root_dir_sectors*fbs.sector_size bytes.
+ *  @param buffer to store root dir in.
  */
-static data_ptr load_root_directory() {
-	// Note the allocation size of at least cluster size is a bit of a hack here
-	// since we can then use the same buffer in `get_file_handle` for other directories
-	data_ptr root_dir_data = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
+static void load_root_directory(data_ptr root_dir_data) {
 
 	int i;
 	for(i=0; i<root_dir_sectors; i++) {
@@ -161,7 +160,6 @@ static data_ptr load_root_directory() {
 		memcpy(root_dir_data+(i*fbs.sector_size), sector_data, fbs.sector_size);
 	}
 
-	return root_dir_data;
 }
 
 
@@ -379,7 +377,9 @@ static file_handle get_file_handle(const char *p) {
 	strcpy(path, p);
 
 	// Now we walk down the directory tree until we find the file we need
-	data_ptr current_directory_data = load_root_directory();
+	data_ptr current_directory_data = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
+	load_root_directory(current_directory_data);
+
 	char* current_name_token;
 	current_name_token = strtok(path, "/");
 	directory_entry_ptr current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
@@ -586,6 +586,56 @@ static void load_file_contents(file_handle fh) {
 }
 
 
+/** - Writes the content of fh->buffer to the disk.
+ *  - Will automatically reserve additional clusters
+ *  if we're running out.
+ *  - Writes FAT to disk at the end if it has modified the FAT
+ *  table.
+ *  Note: The correct buffer size has to written at
+ *  fh->directory_entry.size before calling this function.
+ *  @param fh file handle to work with
+ */
+static void write_file_contents(file_handle fh) {
+
+	boolean new_clusters_allocated = FALSE;
+	int current_cluster = fh->directory_entry.start;
+	int len = fh->directory_entry.size;
+
+	int i=0;
+	while(len > 0) {
+		int bytes_to_write = min(cluster_size, len);
+
+		// TODO copying here is unnecessary, just pass the fh->buffer address
+		data cluster_data[cluster_size];
+		memcpy(cluster_data, fh->buffer+i*cluster_size, bytes_to_write);
+
+		write_cluster(current_cluster, cluster_data);
+
+		len -= bytes_to_write;
+		current_cluster = get_next_cluster_nr(current_cluster);
+
+		if(IS_LAST_CLUSTER(current_cluster) && len > 0) {
+			// if we're out of clusters but still need to write stuff
+			// so we need to allocate a new cluster for this file
+			int new_cluster = find_free_cluster();
+			set_next_cluster(current_cluster, new_cluster);
+			set_next_cluster(new_cluster, LAST_CLUSTER);
+			new_clusters_allocated = TRUE;
+
+			DEBUG_PRINT("Reserved additional cluster %d!", new_cluster);
+		}
+
+		i++;
+	}
+
+	// TODO if current cluster is not last, free remaining clusters here
+
+	if(new_clusters_allocated)
+		write_all_fats(FAT1);
+
+}
+
+
 /** Updates a directory entry for a given file handle fh.
  *  This can be done easily since we store directory_start_cluster
  *  containing the start cluster of the directory which holds our corresponding
@@ -597,7 +647,10 @@ static void update_directory_entry(file_handle fh) {
 	DEBUG_PRINT("Updating directory entry, loading cluster: %d\n", fh->directory_start_cluster);
 
 	data directory[cluster_size];
-	load_cluster(fh->directory_start_cluster, directory);
+	if(fh->directory_start_cluster > 0)
+		load_cluster(fh->directory_start_cluster, directory);
+	else
+		load_root_directory(directory);
 
 	// create a filename for calling get_directory_entry
 	char file_name[MAX_FILENAME_LENGTH];
@@ -607,8 +660,12 @@ static void update_directory_entry(file_handle fh) {
 	assert(entry != NULL);
 	*entry = fh->directory_entry; // overwrite existing entry
 
+
 	// write changes back to disk
-	write_cluster(fh->directory_start_cluster, directory);
+	if(fh->directory_start_cluster > 0)
+		write_cluster(fh->directory_start_cluster, directory);
+	else
+		write_root_directory(directory);
 }
 
 
@@ -652,53 +709,6 @@ int fs_creat(const char *p)
 
 
 	return -1;
-}
-
-/** - Writes the content of fh->buffer to the disk.
- *  - Will automatically reserve additional clusters
- *  if we're running out.
- *  - Writes FAT to disk at the end if it has modified the FAT
- *  table.
- *  Note: The correct buffer size has to written at
- *  fh->directory_entry.size before calling this function.
- *  @param fh file handle to work with
- */
-static void write_file_contents(file_handle fh) {
-
-	boolean new_clusters_allocated = FALSE;
-	int current_cluster = fh->directory_entry.start;
-	int len = fh->directory_entry.size;
-
-	int i=0;
-	while(len > 0) {
-		int bytes_to_write = min(cluster_size, len);
-
-		// TODO copying here is unnecessary, just pass the fh->buffer address
-		data cluster_data[cluster_size];
-		memcpy(cluster_data, fh->buffer+i*cluster_size, bytes_to_write);
-
-		write_cluster(current_cluster, cluster_data);
-
-		len -= bytes_to_write;
-		current_cluster = get_next_cluster_nr(current_cluster);
-
-		if(IS_LAST_CLUSTER(current_cluster) && len > 0) {
-			// if we're out of clusters but we still need to write stuff
-			// so we need to allocate a new cluster for this file
-			int new_cluster = find_free_cluster();
-			set_next_cluster(current_cluster, new_cluster);
-			set_next_cluster(new_cluster, LAST_CLUSTER);
-			new_clusters_allocated = TRUE;
-
-			DEBUG_PRINT("Reserved additional cluster %d!", new_cluster);
-		}
-
-		i++;
-	}
-
-	if(new_clusters_allocated)
-		write_all_fats(FAT1);
-
 }
 
 
