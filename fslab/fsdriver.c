@@ -449,6 +449,7 @@ static void free_file_buffer(file_handle fh) {
 	if(fh->buffer != NULL) {
 		free(fh->buffer);
 		fh->buffer = NULL;
+		fh->pos = 0;
 	}
 }
 
@@ -820,6 +821,7 @@ static file_handle create_file_in_directory(const char *p) {
 
 		// if we come here we have a file located in our path where
 		// we should have a directory (e.g. C:\Dir\File.txt\Dir\File.txt)
+		// or the path is correct but the file we want to create already exists
 		searching = FALSE;
 
 	} while( searching );
