@@ -383,15 +383,13 @@ static file_handle get_file_handle(const char *p) {
 	char* current_name_token;
 	current_name_token = strtok(path, "/");
 	directory_entry_ptr current_entry = NULL; // this is the directory entry which corresponds to the current_name_token
-
+	uint directory_start_cluster = 0;
 	boolean searching = TRUE;
 	do {
-		directory_entry_ptr last_entry = current_entry;
 		current_entry = get_directory_entry(current_directory_data, current_name_token);
 
 		if( IS_FILE(current_entry) && (strtok(NULL, "/") == NULL) ) {
 			// we have found the file we're searching for
-			uint directory_start_cluster = (last_entry == NULL) ? 0 : last_entry->start; // 0 means root directory
 			fh = create_file_handle(current_entry, directory_start_cluster);
 			searching = FALSE;
 			break;
@@ -400,6 +398,7 @@ static file_handle get_file_handle(const char *p) {
 			current_name_token = strtok(NULL, "/");
 			if(current_name_token != NULL) {
 				// this only works since we assume directory size does never exceed 1 cluster
+				directory_start_cluster = current_entry->start;
 				load_cluster(current_entry->start, current_directory_data);
 				continue;
 			}
