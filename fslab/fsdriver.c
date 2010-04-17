@@ -80,6 +80,7 @@ typedef struct file_table_entry* file_handle;
 #define IS_LAST_CLUSTER(c)  ( (c) >= 0xFF7 )
 #define IS_ODD_NUMBER(n)    ( (n) & 0x1 )
 #define IS_VALID_ENTRY(c)   ( (c)->name[0] != 0x0 )
+#define LAST_CLUSTER		0xFFF
 #define BIOS_READ_WRITE_SIZE 512 		// in bytes
 #define MAX_FILENAME_LENGTH   13  		// filename (8 bytes) + dot (1byte) + extension (3 bytes)
 #define MAX_PATH_LENGTH      255
@@ -195,6 +196,22 @@ static void load_cluster(uint number, data_ptr buffer) {
 		bios_read(cluster_start_sector+i, buffer + (fbs.sector_size*i));
 	}
 
+}
+
+
+/** Writes the content of `buffer` into cluster identified by `number`.
+ *  @param number of the cluster
+ *  @param buffer contains data to be written
+ */
+static void write_cluster(uint number, data_ptr buffer) {
+
+	number = number - 2; // internally we work with cluster numbers from 0 to n-2
+	int cluster_start_sector = (root_dir_start_sector + root_dir_sectors) + (number * fbs.sec_per_clus);
+
+	int i;
+	for(i=0; i<fbs.sec_per_clus; i++) {
+		bios_write(cluster_start_sector+i, buffer+i*fbs.sector_size);
+	}
 }
 
 
@@ -492,6 +509,53 @@ static int get_next_cluster_nr(int cluster_nr) {
 }
 
 
+/** Sets the next cluster for `current` to `next` in the FAT table
+ *  after modifying the fat table, contents of FAT1 is
+ *  automatically written back to disk.
+ *  For a detailed explanation see comments in get_next_cluster.
+ *  Note: this function works in memory. So clients have to worry about
+ *  saving FAT1 to disk by calling write_all_fats(FAT1).
+ *  @param current cluster we want to set the next cluster for
+ *  @param next cluster where current shall point to
+ */
+static void set_next_cluster(int current, unsigned short next) {
+
+	int fat_offset = current + (current / 2); // multiply by 1.5 [3 bytes per 2 cluster]
+
+	if(IS_ODD_NUMBER(current)) {
+		FAT1[fat_offset] = next << 4 | (FAT1[fat_offset] & 0x000F); // preserve lower 4 bits
+		FAT1[fat_offset+1] = next >> 4;
+	}
+	else {
+		FAT1[fat_offset] = next & 0xFF;
+		FAT1[fat_offset+1] =  (next & 0xF00) | (FAT1[fat_offset+1] & 0xF0); // preserve upper 4 bits
+	}
+
+	DEBUG_PRINT("cluster %d next value set to: %d\n", current, get_next_cluster_nr(current));
+}
+
+
+/** Walks through FAT and finds a free cluster.
+ * @return the first cluster in the FAT which is found to be free - or
+ * -1 if there are no more free clusters.
+ */
+static int find_free_cluster() {
+
+	int cluster;
+	for(cluster=3; cluster < (fbs.sectors/fbs.sec_per_clus); cluster++) {
+
+		DEBUG_PRINT("next cluster for cluster=%d is: %d\n", cluster, get_next_cluster_nr(cluster));
+		if(get_next_cluster_nr(cluster) == 0) {
+			// cluster is free
+			return cluster;
+		}
+
+	}
+
+	return -1; // no more free clusters
+}
+
+
 /** Loads the contents of a file from disk into the file handle buffer.
  *  If the buffer is non null then the function will free the buffer
  *  and replace it with the newly allocated one.
@@ -522,18 +586,32 @@ static void load_file_contents(file_handle fh) {
 
 }
 
-/** This writes the in memory buffer of file_handle fh to disk.
- *  This function also takes care of allocating new clusters or freeing
- *  the ones not used anymore.
- *  @param fh file handle identifying the file
+
+/** Updates a directory entry for a given file handle fh.
+ *  This can be done easily since we store directory_start_cluster
+ *  containing the start cluster of the directory which holds our corresponding
+ *  directory entry. Since we assume a directory file is never bigger than
+ *  1 cluster this function can be written in a very simple manner.
+ *  @param fh file to update
  */
-static void write_file_contents(file_handle fh) {
-
-}
-
 static void update_directory_entry(file_handle fh) {
+	DEBUG_PRINT("Updating directory entry, loading cluster: %d\n", fh->directory_start_cluster);
 
+	data directory[cluster_size];
+	load_cluster(fh->directory_start_cluster, directory);
+
+	// create a filename for calling get_directory_entry
+	char file_name[MAX_FILENAME_LENGTH];
+	sprintf(file_name, "%.8s.%.3s", fh->directory_entry.name, fh->directory_entry.ext);
+
+	directory_entry_ptr entry = get_directory_entry(directory, file_name);
+	assert(entry != NULL);
+	*entry = fh->directory_entry; // overwrite existing entry
+
+	// write changes back to disk
+	write_cluster(fh->directory_start_cluster, directory);
 }
+
 
 /** Reads `len` bytes from a file into the `buffer`.
  *  This function loads the content of a file from disk to memory (fh->buffer)
@@ -577,6 +655,53 @@ int fs_creat(const char *p)
 	return -1;
 }
 
+/** - Writes the content of fh->buffer to the disk.
+ *  - Will automatically reserve additional clusters
+ *  if we're running out.
+ *  - Writes FAT to disk at the end if it has modified the FAT
+ *  table.
+ *  Note: The correct buffer size has to written at
+ *  fh->directory_entry.size before calling this function.
+ *  @param fh file handle to work with
+ */
+static void write_file_contents(file_handle fh) {
+
+	boolean new_clusters_allocated = FALSE;
+	int current_cluster = fh->directory_entry.start;
+	int len = fh->directory_entry.size;
+
+	int i=0;
+	while(len > 0) {
+		int bytes_to_write = min(cluster_size, len);
+
+		// TODO copying here is unnecessary, just pass the fh->buffer address
+		data cluster_data[cluster_size];
+		memcpy(cluster_data, fh->buffer+i*cluster_size, bytes_to_write);
+
+		write_cluster(current_cluster, cluster_data);
+
+		len -= bytes_to_write;
+		current_cluster = get_next_cluster_nr(current_cluster);
+
+		if(IS_LAST_CLUSTER(current_cluster) && len > 0) {
+			// if we're out of clusters but we still need to write stuff
+			// so we need to allocate a new cluster for this file
+			int new_cluster = find_free_cluster();
+			set_next_cluster(current_cluster, new_cluster);
+			set_next_cluster(new_cluster, LAST_CLUSTER);
+			new_clusters_allocated = TRUE;
+
+			DEBUG_PRINT("Reserved additional cluster %d!", new_cluster);
+		}
+
+		i++;
+	}
+
+	if(new_clusters_allocated)
+		write_all_fats(FAT1);
+
+}
+
 
 /** Writes `buffer` of `len` bytes to file identified by `fd`.
  *  @param fd file descriptor
@@ -606,3 +731,4 @@ int fs_write(int fd, void *buffer, int len) {
 
 	return -1;
 }
+
