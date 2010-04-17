@@ -40,6 +40,7 @@ typedef int boolean;
 #define TRUE 1
 #define FALSE 0
 typedef unsigned int uint;
+typedef unsigned char data;
 typedef unsigned char* data_ptr;
 
 // Types needed for our FAT Implementation
@@ -50,7 +51,7 @@ struct file_table_entry {
 	int pos;
 	int buffer_size;
 	data_ptr buffer;
-	int dir_cluster_nr; // this is the cluster where the corresponding file entry for this file is
+	uint directory_start_cluster; // this is the cluster where the corresponding file entry for this file is
 						// if dir_cluster_nr == 0: then, this file is in the root dir
 	struct dos_dir_entry directory_entry;
 };
@@ -278,15 +279,15 @@ static int find_free_file_slot() {
  * @param entry the corresponding directory entry
  * @return A file handle for the file.
  */
-static file_handle create_file_handle(directory_entry_ptr entry) {
+static file_handle create_file_handle(directory_entry_ptr entry, uint directory_start_cluster) {
 
 	file_handle fh = malloc( sizeof(struct file_table_entry) );
+
 	fh->pos = 0;
 	fh->buffer = NULL;
-
+	fh->directory_start_cluster = directory_start_cluster;
 	memcpy(&fh->directory_entry, (data_ptr)entry, sizeof(struct dos_dir_entry));
 
-	//_load_file_data(fh);
 	return fh;
 }
 
@@ -367,11 +368,13 @@ static file_handle get_file_handle(const char *p) {
 
 	boolean searching = TRUE;
 	do {
+		directory_entry_ptr last_entry = current_entry;
 		current_entry = get_directory_entry(current_directory_data, current_name_token);
 
 		if( IS_FILE(current_entry) && (strtok(NULL, "/") == NULL) ) {
 			// we have found the file we're searching for
-			fh = create_file_handle(current_entry);
+			uint directory_start_cluster = (last_entry == NULL) ? 0 : last_entry->start; // 0 means root directory
+			fh = create_file_handle(current_entry, directory_start_cluster);
 			searching = FALSE;
 			break;
 		}
@@ -449,6 +452,19 @@ void fs_close(int fd) {
  *  numbers stored. So we have to multiply our active cluster
  *  by 1.5 to get the correct offset in the fat table, and do
  *  some bit shifting to get the correct number in the end.
+ *
+ *  As an example lets take say we have cluster_nr = 3:
+ *  So our fat_offset will be 3 * 1.5 = 4.
+ *  Our FAT looks like this (The A's being cluster_nr zero):
+ *   0xAAABBB
+ *   0xCCCDDD
+ *  As we can see multiplying by 1.5 makes sense
+ *  because we always go 1 byte forward (8 bits * 1.5 = 12 bits).
+ *  When we have the correct offset we extract it as a short (in our example
+ *  this would be 0xCDDD). So we get 4 bits too
+ *  much which we have to clear then first before we can return
+ *  the actual next cluster number.
+ *
  *  @param cluster_nr number of the current cluster
  */
 static int get_next_cluster_nr(int cluster_nr) {
@@ -456,6 +472,7 @@ static int get_next_cluster_nr(int cluster_nr) {
 
 	unsigned short next_cluster_nr = *(unsigned short*)&FAT1[fat_offset];
 
+	// this only works for little endian machines
 	if(IS_ODD_NUMBER(cluster_nr)) {
 		next_cluster_nr = next_cluster_nr >> 4;
 	}
@@ -483,13 +500,14 @@ static void load_file_contents(file_handle fh) {
 		fh->buffer = NULL;
 	}
 
+	// walk through the clusters, copy their contents into fh->buffer
 	int current_cluster_nr = fh->directory_entry.start;
 	int i = 0;
 	while(!IS_LAST_CLUSTER(current_cluster_nr)) {
 
 		fh->buffer = realloc(fh->buffer, cluster_size*(i+1));
 
-		char cluster_data[cluster_size];
+		data cluster_data[cluster_size];
 		load_cluster(current_cluster_nr, cluster_data);
 		memcpy(fh->buffer+(i++*cluster_size), cluster_data, cluster_size);
 
@@ -499,6 +517,18 @@ static void load_file_contents(file_handle fh) {
 
 }
 
+/** This writes the in memory buffer of file_handle fh to disk.
+ *  This function also takes care of allocating new clusters or freeing
+ *  the ones not used anymore.
+ *  @param fh file handle identifying the file
+ */
+static void write_file_contents(file_handle fh) {
+
+}
+
+static void update_directory_entry(file_handle fh) {
+
+}
 
 /** Reads `len` bytes from a file into the `buffer`.
  *  This function loads the content of a file from disk to memory (fh->buffer)
@@ -515,7 +545,6 @@ int fs_read(int fd, void *buffer, int len) {
 	assert(fd >= 0 && fd < MAX_FILES);
 
 	file_handle fh = file_table[fd];
-
 	if(fh != NULL) {
 
 		// lazy loading file contents on first read
@@ -527,6 +556,7 @@ int fs_read(int fd, void *buffer, int len) {
 		memcpy(buffer, fh->buffer+fh->pos, bytes_to_read);
 
 		fh->pos += bytes_to_read; // update position in file handle
+
 		return bytes_to_read;
 	}
 
@@ -537,13 +567,45 @@ int fs_read(int fd, void *buffer, int len) {
 /* creates a file */
 int fs_creat(const char *p)
 {
-  /* consider the dir structure already there */
-  return -1;
+
+
+	return -1;
 }
 
 
-/* writes a file */
-int fs_write(int fd, void *buffer, int len)
-{
-  return -1;
+static void free_file_buffer(file_handle fh) {
+	if(fh->buffer != NULL) {
+		free(fh->buffer);
+		fh->buffer = NULL;
+	}
+}
+
+
+/** Writes `buffer` of `len` bytes to file identified by `fd`.
+ *  @param fd file descriptor
+ *  @param buffer containing new content
+ *  @param len size of the buffer
+ *  @return the number of written bytes
+ *  note: as long as we have a valid file descriptor we always return len since we
+ *  don't cover special cases where we're running out of clusters.
+ */
+int fs_write(int fd, void *buffer, int len) {
+	assert(fd >= 0 && fd < MAX_FILES);
+
+	file_handle fh = file_table[fd];
+	if(fh != NULL) {
+
+		free_file_buffer(fh); // we don't need the old content anymore
+
+		fh->buffer = malloc(len); // reserve new internal buffer
+		memcpy(fh->buffer, buffer, len);
+		fh->directory_entry.size = len;
+
+		write_file_contents(fh);
+		update_directory_entry(fh);
+
+		return len;
+	}
+
+	return -1;
 }
