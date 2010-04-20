@@ -1,21 +1,23 @@
 /* FAT12 Driver
  * ====================
  * This is a simple FAT12 driver implementation. We have
- * functions for opening, closing, creating and reading and writing
+ * functions for opening, closing, creating, reading and writing
  * to files. On fs_open a corresponding `file_table_entry` struct will
  * be created to keep track of the associated information for the file.
  * On the first fs_read call the buffer in the file_table_entry is loaded
  * with the file contents and the bytes we want to read are copied in the
  * client buffer.
  * On a fs_write call we overwrite the buffer and write it to disk (including
- * updating the corresponding `directory_entry`).
+ * updating the corresponding `directory_entry`). This is done by storing the
+ * cluster number of the corresponding directory in the file table entry.
  * Calls to fs_creat create a new `directory_entry` in the corresponding directory.
  *
  * Known Limitations
  * ====================
  * - The code does not handle long file names.
  * - Code can not create directories.
- * - The path length is limited to 255 characters since strtok cannot handle const char* directly
+ * - The path length is limited to 255 (MAX_PATH_LENGTH) characters since strtok cannot handle const char* directly
+ * - Filename length is limited to 13 characters (MAX_FILENAME_LENGTH)
  * - The code assumes that every non-root directory only has one cluster.
  *   This limits the number of files per directory to sizeof(dos_dir_entry) / cluster_size.
  * - A directory entry whose name starts with byte 0x0 is available and marks the end
@@ -183,6 +185,7 @@ static void write_root_directory(data_ptr root_directory) {
 
 
 /** Loads cluster data identified by `number` into `buffer`.
+ *  The first cluster is located right after the end of the root directory.
  *  @param number cluster to load
  *  @param buffer to write contents in
  */
@@ -278,7 +281,7 @@ void fs_init() {
 }
 
 
-/** Finds first free entry in file table.
+/** Walks through the file table and finds the first free entry in file table.
  *  @return This function returns the index of the first
  *  free entry found or -1 if the file table is currently full.
  */
@@ -349,7 +352,7 @@ static directory_entry_ptr get_directory_entry(data_ptr directory_data, const ch
 	directory_entry_ptr current_entry = (directory_entry_ptr) directory_data;
 	while(IS_VALID_ENTRY(current_entry)) {
 
-		if( IS_EMPTY_ENTRY(current_entry) && HAS_LONG_FILENAME(current_entry))
+		if( IS_EMPTY_ENTRY(current_entry) && HAS_LONG_FILENAME(current_entry)) //  TODO bug?
 			continue;
 
 		// generate entry name
@@ -444,7 +447,9 @@ int fs_open(const char *p) {
 
 }
 
-
+/** Frees a file buffer and sets it to NULL.
+ *  @param fh file handle with the buffer.
+ */
 static void free_file_buffer(file_handle fh) {
 	if(fh->buffer != NULL) {
 		free(fh->buffer);
@@ -533,7 +538,7 @@ static void set_next_cluster(int current, unsigned short next) {
 		FAT1[fat_offset+1] =  (next & 0xF00) | (FAT1[fat_offset+1] & 0xF0); // preserve upper 4 bits
 	}
 
-	DEBUG_PRINT("cluster %d next value set to: %d\n", current, get_next_cluster_nr(current));
+	//DEBUG_PRINT("cluster %d next value set to: %d\n", current, get_next_cluster_nr(current));
 }
 
 
@@ -546,7 +551,7 @@ static int find_free_cluster() {
 	int cluster;
 	for(cluster=3; cluster < (fbs.sectors/fbs.sec_per_clus); cluster++) {
 
-		DEBUG_PRINT("next cluster for cluster=%d is: %d\n", cluster, get_next_cluster_nr(cluster));
+		//DEBUG_PRINT("next cluster for cluster=%d is: %d\n", cluster, get_next_cluster_nr(cluster));
 		if(get_next_cluster_nr(cluster) == 0) {
 			// cluster is free
 			return cluster;
@@ -597,33 +602,31 @@ static void load_file_contents(file_handle fh) {
  *  Note: The correct buffer size has to written at
  *  fh->directory_entry.size before calling this function.
  *  @param fh file handle to work with
+ *  @return number of bytes written to disk
  */
-static void write_file_contents(file_handle fh) {
+static int write_file_contents(file_handle fh, int size) {
 
 	boolean new_clusters_allocated = FALSE;
 	int current_cluster = fh->directory_entry.start;
-	int len = fh->directory_entry.size;
+	int not_written_bytes = size;
 
 	int i=0;
-	while(len > 0) {
-		int bytes_to_write = min(cluster_size, len);
+	while(not_written_bytes > 0) {
+		int bytes_to_write = min(cluster_size, not_written_bytes);
 
-		// TODO copying here is unnecessary, just pass the fh->buffer address
-		data cluster_data[cluster_size];
-		memcpy(cluster_data, fh->buffer+i*cluster_size, bytes_to_write);
+		write_cluster(current_cluster, fh->buffer+i*cluster_size);
 
-		write_cluster(current_cluster, cluster_data);
-
-		len -= bytes_to_write;
+		not_written_bytes -= bytes_to_write;
 		current_cluster = get_next_cluster_nr(current_cluster);
 
-		if(IS_LAST_CLUSTER(current_cluster) && len > 0) {
+		if(IS_LAST_CLUSTER(current_cluster) && not_written_bytes > 0) {
 			// if we're out of clusters but still need to write stuff
 			// so we need to allocate a new cluster for this file
 			int new_cluster;
 			if( (new_cluster = find_free_cluster()) == -1 ) {
-				// TODO abort because there is no more disk space
-				//return len;
+				if(new_clusters_allocated)
+					write_all_fats(FAT1);
+				return size-not_written_bytes;
 			}
 			assert(new_cluster != -1);
 
@@ -631,7 +634,7 @@ static void write_file_contents(file_handle fh) {
 			set_next_cluster(new_cluster, LAST_CLUSTER);
 			new_clusters_allocated = TRUE;
 
-			DEBUG_PRINT("Reserved additional cluster %d!", new_cluster);
+			//DEBUG_PRINT("Reserved additional cluster %d!", new_cluster);
 		}
 
 		i++;
@@ -642,9 +645,8 @@ static void write_file_contents(file_handle fh) {
 	if(new_clusters_allocated)
 		write_all_fats(FAT1);
 
-	// TODO return actual bytes written
-	// return len;
-
+	assert(not_written_bytes == 0);
+	return size-not_written_bytes;
 }
 
 
@@ -653,6 +655,8 @@ static void write_file_contents(file_handle fh) {
  *  containing the start cluster of the directory which holds our corresponding
  *  directory entry. Since we assume a directory file is never bigger than
  *  1 cluster this function can be written in a very simple manner.
+ *  The convention we use is that directory_start_cluster equal to zero means we have
+ *  to write to the root directory - it's okay because real clusters always start at 2.
  *  @param fh file to update
  */
 static void update_directory_entry(file_handle fh) {
@@ -732,7 +736,7 @@ static directory_entry create_directory_entry(const char* entry_name) {
 	memcpy(new_entry.ext, fat_name+9, 3);
 
 	new_entry.size = 0;
-	new_entry.attr = 0x00; // its a file we make
+	new_entry.attr = 0x00; // its a file
 
 	// we allocate one cluster for the file directly.
 	// this could probably be a problem if you have lots of empty files
@@ -747,7 +751,7 @@ static directory_entry create_directory_entry(const char* entry_name) {
 
 
 /** Places `new_entry` in the first free spot in `directory_data`.
- *  @param directory_data contents if directory
+ *  @param directory_data contents of directory
  *  @param new_entry entry to add
  *  @return pointer to the new directory entry.
  *  Note: since we assume we always have space and there is a entry with
@@ -761,7 +765,7 @@ static directory_entry_ptr place_directory_entry(data_ptr directory_data, direct
 		current_entry++;
 	}
 
-	*current_entry = new_entry;
+	*current_entry = new_entry; // overwrite
 
 	return current_entry;
 
@@ -875,12 +879,13 @@ int fs_write(int fd, void *buffer, int len) {
 
 		fh->buffer = malloc(len); // reserve new internal buffer
 		memcpy(fh->buffer, buffer, len);
-		fh->directory_entry.size = len;
 
-		write_file_contents(fh);
+		int bytes_written = write_file_contents(fh, len);
+		fh->directory_entry.size = bytes_written;
+
 		update_directory_entry(fh);
 
-		return len;
+		return bytes_written;
 	}
 
 	return -1;
