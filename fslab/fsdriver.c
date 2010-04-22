@@ -94,7 +94,7 @@ static int root_dir_start_sector = 0; 	// first sector of the root directory
 static int root_dir_sectors = 0;		// # of sectors reserved for root directory
 static int cluster_size = 0; 			// in bytes
 static int fat_size = 0; 				// in bytes
-
+static int number_of_clusters = 0;		// number of total clusters
 
 
 /** Loads data of FAT{1,2,3...}.
@@ -256,6 +256,7 @@ void fs_init() {
 	root_dir_start_sector = (fbs.reserved + (fbs.fats * fbs.fat_length));
 	root_dir_sectors = (fbs.dir_entries * sizeof(struct dos_dir_entry)) / fbs.sector_size;
 	fat_size = fbs.fat_length*fbs.sector_size;
+	number_of_clusters = fbs.sectors / fbs.sec_per_clus;
 
 	assert(fbs.fats >= 1); // we need at least 1 FAT
 	FAT1 = load_fat(1);
@@ -500,6 +501,8 @@ void fs_close(int fd) {
  *  @param cluster_nr number of the current cluster
  */
 static int get_next_cluster_nr(int cluster_nr) {
+	assert(0 <= cluster_nr && cluster_nr <= number_of_clusters);
+
 	int fat_offset = cluster_nr + (cluster_nr / 2); // multiply by 1.5 [3 bytes per 2 cluster]
 
 	unsigned short next_cluster_nr = *(unsigned short*)&FAT1[fat_offset];
@@ -526,6 +529,7 @@ static int get_next_cluster_nr(int cluster_nr) {
  *  @param next cluster where current shall point to
  */
 static void set_next_cluster(int current, unsigned short next) {
+	assert(0 <= current && current <= number_of_clusters);
 
 	int fat_offset = current + (current / 2); // multiply by 1.5 [3 bytes per 2 cluster]
 
@@ -580,7 +584,6 @@ static void load_file_contents(file_handle fh) {
 	int current_cluster_nr = fh->directory_entry.start;
 	int i = 0;
 	while(!IS_LAST_CLUSTER(current_cluster_nr)) {
-
 		fh->buffer = realloc(fh->buffer, cluster_size*(i+1));
 
 		data cluster_data[cluster_size];
@@ -588,7 +591,6 @@ static void load_file_contents(file_handle fh) {
 		memcpy(fh->buffer+(i++*cluster_size), cluster_data, cluster_size);
 
 		current_cluster_nr = get_next_cluster_nr(current_cluster_nr);
-
 	}
 
 }
@@ -613,17 +615,17 @@ static int write_file_contents(file_handle fh, int size) {
 	int i=0;
 	while(not_written_bytes > 0) {
 		int bytes_to_write = min(cluster_size, not_written_bytes);
-
 		write_cluster(current_cluster, fh->buffer+i*cluster_size);
 
 		not_written_bytes -= bytes_to_write;
-		current_cluster = get_next_cluster_nr(current_cluster);
+		int next_cluster = get_next_cluster_nr(current_cluster);
 
-		if(IS_LAST_CLUSTER(current_cluster) && not_written_bytes > 0) {
+		if(IS_LAST_CLUSTER(next_cluster) && not_written_bytes > 0) {
 			// if we're out of clusters but still need to write stuff
 			// so we need to allocate a new cluster for this file
 			int new_cluster;
 			if( (new_cluster = find_free_cluster()) == -1 ) {
+				//DEBUG_PRINT("no more clusters available :-(\n");
 				if(new_clusters_allocated)
 					write_all_fats(FAT1);
 				return size-not_written_bytes;
@@ -633,8 +635,10 @@ static int write_file_contents(file_handle fh, int size) {
 			set_next_cluster(current_cluster, new_cluster);
 			set_next_cluster(new_cluster, LAST_CLUSTER);
 			new_clusters_allocated = TRUE;
-
-			//DEBUG_PRINT("Reserved additional cluster %d!", new_cluster);
+			current_cluster = new_cluster;
+		}
+		else {
+			current_cluster = next_cluster;
 		}
 
 		i++;
@@ -646,7 +650,7 @@ static int write_file_contents(file_handle fh, int size) {
 		write_all_fats(FAT1);
 
 	assert(not_written_bytes == 0);
-	return size-not_written_bytes;
+	return size;
 }
 
 
@@ -660,7 +664,7 @@ static int write_file_contents(file_handle fh, int size) {
  *  @param fh file to update
  */
 static void update_directory_entry(file_handle fh) {
-	DEBUG_PRINT("Updating directory entry, loading cluster: %d\n", fh->directory_start_cluster);
+	//DEBUG_PRINT("Updating directory entry, loading cluster: %d\n", fh->directory_start_cluster);
 
 	data_ptr directory = malloc( max(root_dir_sectors*fbs.sector_size, cluster_size) );
 
@@ -871,7 +875,6 @@ int fs_creat(const char *p)
  */
 int fs_write(int fd, void *buffer, int len) {
 	assert(fd >= 0 && fd < MAX_FILES);
-
 	file_handle fh = file_table[fd];
 	if(fh != NULL) {
 
@@ -882,7 +885,6 @@ int fs_write(int fd, void *buffer, int len) {
 
 		int bytes_written = write_file_contents(fh, len);
 		fh->directory_entry.size = bytes_written;
-
 		update_directory_entry(fh);
 
 		return bytes_written;
