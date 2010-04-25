@@ -55,14 +55,14 @@ struct file_table_entry {
 	int buffer_size;
 	data_ptr buffer;
 	uint directory_start_cluster; // this is the cluster where the corresponding file entry for this file is
-						// if dir_cluster_nr == 0: then, this file is in the root dir
+				// if directory_start_cluster == 0: then, this file is in the root dir
 	struct dos_dir_entry directory_entry;
 };
 typedef struct file_table_entry* file_handle;
 
 
 // Macro for Debugging
-#define DEBUG 1
+#define DEBUG 0 
 #ifdef DEBUG
 	#define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
