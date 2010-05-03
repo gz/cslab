@@ -26,7 +26,7 @@ typedef unsigned int uint;
 
 
 // Macro for Debugging
-#define DEBUG 0
+#define DEBUG 1
 #ifdef DEBUG
 	#define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -35,13 +35,36 @@ typedef unsigned int uint;
 
 
 // Global Definitions & Variables
+#define CACHE_LINE 64
 #define BUFFER_SIZE 512
+
+char cache_pad0[CACHE_LINE];
+
+/*consumer’s local control variables*/
+int localWrite = 0;
+int nextRead = 0;
+int rBatch = 0;
+char cache_pad1[CACHE_LINE - 3 * sizeof(int)];
+
+/*producer’s local control variables*/
+int localRead = 0;
+int nextWrite = 0;
+int wBatch = 0;
+char cache_pad2[CACHE_LINE - 3 * sizeof(int)];
+
+/*constants*/
+int blockOnEmpty = 0;
+int batchSize = 20;
+char cache_pad3[CACHE_LINE - 3 * sizeof(int)];
 
 
 struct buffer_structure {
     event_t storage[BUFFER_SIZE];
-    int write_index;
-    int read_index;
+
+    char cache_pad0[CACHE_LINE];
+    volatile int read;
+    volatile int write;
+    char cachePad1[CACHE_LINE - 2 * sizeof(int)];
 };
 
 /** Allocates & initializes a buffer and returns it to the client.
@@ -52,9 +75,15 @@ buffer_ptr allocate_buffer() {
 	buffer_ptr buffer = malloc( sizeof(buffer_t) );
 
 	if(buffer) {
-		buffer->write_index = 0;
-		buffer->read_index = 0;
+		buffer->read = 0;
+		buffer->write = 0;
+
+		int i;
+		for(i=0; i<BUFFER_SIZE; i++) {
+			buffer->storage[i] = NULL;
+		}
 	}
+
 
     return buffer;
 }
@@ -64,28 +93,58 @@ void free_buffer(buffer_ptr buffer) {
     free(buffer);
 }
 
-void produce_event(buffer_ptr buffer, event_t event) {
-	//assert(event != NULL);
+int NEXT(int current) {
+	return (current+1) % (BUFFER_SIZE);
+}
 
-	// mutually exclusive
-	int previous_index = buffer->write_index++;
-	// end mutually exclusive
-	DEBUG_PRINT("write at %d\n", previous_index);
-	buffer->storage[previous_index % BUFFER_SIZE] = event;
+void produce_event(buffer_ptr buffer, event_t element) {
+	DEBUG_PRINT("produce\n");
+
+	int afterNextWrite = NEXT(nextWrite);
+	if (afterNextWrite == localRead) {
+		DEBUG_PRINT("waiting until afterNextWrite:%d != buffer->read:%d...\n", afterNextWrite, buffer->read);
+		while (afterNextWrite == buffer->read) {
+			/* busy waiting */
+		}
+		localRead = buffer->read;
+	}
+
+	buffer->storage[nextWrite] = element;
+	nextWrite = afterNextWrite;
+	wBatch++;
+	if (wBatch >= batchSize) {
+		buffer->write = nextWrite;
+		wBatch = 0;
+	}
+
 }
 
 void produced_last_event(buffer_ptr buffer) {
-    buffer->write_index += 1;
+	produce_event(buffer, NULL);
 }
 
 event_t consume_event(buffer_ptr buffer) {
-    
-    // block until current spot is safe to read
-    while (buffer->read_index == buffer->write_index) { DEBUG_PRINT("busy wait with write index %d\n", buffer->write_index); }
-    DEBUG_PRINT("read_index is %d\n", buffer->read_index);
-    event_t result = buffer->storage[buffer->read_index];
-    buffer->read_index = buffer->read_index++ % BUFFER_SIZE;
-    
-    return result;
+	DEBUG_PRINT("consume\n");
+
+	if(nextRead == localWrite) {
+		DEBUG_PRINT("waiting until nextRead:%d != buffer->write:%d...\n", nextRead, buffer->write);
+		while(nextRead == buffer->write) {
+			/*busy waiting*/
+
+		}
+		localWrite = buffer->write;
+	}
+
+	event_t element = buffer->storage[nextRead];
+	nextRead = NEXT(nextRead);
+	rBatch++;
+
+	if(rBatch >= batchSize) {
+		buffer->read = nextRead;
+		rBatch = 0;
+	}
+
+	return element;
+
 }
 
