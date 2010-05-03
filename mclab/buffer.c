@@ -1,104 +1,90 @@
-/*
- *  buffer.c
- *  prodconsumer
+/* Producer & Consumer
+ * ====================
  *
- *  Created by Nicholas Matsakis on 4/2/08.
- *  Copyright 2008 __MyCompanyName__. All rights reserved.
+ *
+ * Authors
+ * ====================
+ * team07:
+ * Boris Bluntschli (borisb@student.ethz.ch)
+ * Gerd Zellweger (zgerd@student.ethz.ch)
  *
  */
 
-#include "buffer.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include <stdio.h>
+#include <assert.h>
 
-#if 0
-#  define debug(args...) fprintf(args)
+#include "buffer.h"
+
+
+// Some basic types & macros
+typedef int boolean;
+#define TRUE 1
+#define FALSE 0
+typedef unsigned int uint;
+
+
+// Macro for Debugging
+#define DEBUG 0
+#ifdef DEBUG
+	#define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
-#  define debug(args...)
+	#define DEBUG_PRINT(fmt, args...)    /* Don't do anything in release */
 #endif
 
+
+// Global Definitions & Variables
 #define BUFFER_SIZE 512
 
-/*
- Simplest possible buffer structure: use a single, circular buffer.  
- 
- wr_pos always points at a spot that is safe to write, and rd_pos always
- points at the next spot to read (it may not be safe).
- 
- Attempts to read block if rd_pos == wr_pos.
- 
- Attempts to write block if wr_pos == rd_pos - 1, because the next spot is
- not yet safe to write.
- 
- You will probably want to change this quite a bit!
- */
-struct buffer_t {
-    event_t buffer[BUFFER_SIZE];
-    int rd_pos;
-    int wr_pos;
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
+
+struct buffer_structure {
+    event_t storage[BUFFER_SIZE];
+    int write_index;
+    int read_index;
 };
 
-buffer_t *allocate_buffer() {
-    buffer_t *buffer = (buffer_t*) malloc(sizeof(buffer_t));
-    if (buffer) {
-        buffer->rd_pos = 0;
-        buffer->wr_pos = 0;
-        pthread_mutex_init(&buffer->lock, NULL);
-        pthread_cond_init(&buffer->cond, NULL);
-    }
+/** Allocates & initializes a buffer and returns it to the client.
+ * @return buffer
+ */
+buffer_ptr allocate_buffer() {
+
+	buffer_ptr buffer = malloc( sizeof(buffer_t) );
+
+	if(buffer) {
+		buffer->write_index = 0;
+		buffer->read_index = 0;
+	}
+
     return buffer;
 }
 
-void free_buffer(buffer_t *buffer) {
-    pthread_mutex_destroy(&buffer->lock);
+
+void free_buffer(buffer_ptr buffer) {
     free(buffer);
 }
 
-void produce_event(buffer_t *buffer, event_t event) {
-    int next_wr_pos;
-    
-    pthread_mutex_lock(&buffer->lock);        
-    
-    // block until the next spot is safe to write
-    next_wr_pos = (buffer->wr_pos+1) % BUFFER_SIZE;
-    while (next_wr_pos == buffer->rd_pos) {
-        debug(stderr, "produce_block(%d,%d)\n",
-                buffer->rd_pos, buffer->wr_pos);
-        pthread_cond_wait(&buffer->cond, &buffer->lock);
-    }
-    
-    buffer->buffer[buffer->wr_pos] = event;
-    buffer->wr_pos = next_wr_pos;
-    
-    pthread_mutex_unlock(&buffer->lock);
-    pthread_cond_broadcast(&buffer->cond);
+void produce_event(buffer_ptr buffer, event_t event) {
+	//assert(event != NULL);
+
+	// mutually exclusive
+	int previous_index = buffer->write_index++;
+	// end mutually exclusive
+	DEBUG_PRINT("write at %d\n", previous_index);
+	buffer->storage[previous_index % BUFFER_SIZE] = event;
 }
 
-void produced_last_event(buffer_t *buffer) {
-    produce_event(buffer, NULL);
+void produced_last_event(buffer_ptr buffer) {
+    buffer->write_index += 1;
 }
 
-event_t consume_event(buffer_t *buffer) {    
-    pthread_mutex_lock(&buffer->lock);
+event_t consume_event(buffer_ptr buffer) {
     
     // block until current spot is safe to read
-    while (buffer->rd_pos == buffer->wr_pos) {
-        debug(stderr, "consume_block(%d,%d)\n",
-                buffer->rd_pos, buffer->wr_pos);
-        pthread_cond_wait(&buffer->cond, &buffer->lock);
-    }
-    
-    if ((buffer->rd_pos % 50) == 0)
-        debug(stderr, "consume rd_pos = %d wr_pos = %d\n", 
-              buffer->rd_pos, buffer->wr_pos);
-    event_t result = buffer->buffer[buffer->rd_pos++];    
-    buffer->rd_pos = buffer->rd_pos % BUFFER_SIZE;
-    
-    pthread_mutex_unlock(&buffer->lock);
-    pthread_cond_broadcast(&buffer->cond);
+    while (buffer->read_index == buffer->write_index) { DEBUG_PRINT("busy wait with write index %d\n", buffer->write_index); }
+    DEBUG_PRINT("read_index is %d\n", buffer->read_index);
+    event_t result = buffer->storage[buffer->read_index];
+    buffer->read_index = buffer->read_index++ % BUFFER_SIZE;
     
     return result;
 }
