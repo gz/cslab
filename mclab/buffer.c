@@ -38,37 +38,37 @@ typedef unsigned int uint;
 
 // Global Definitions & Variables
 #define CACHE_LINE 64
-#define BUFFER_SIZE 900
+#define BUFFER_SIZE 2200
 
-char cache_pad0[CACHE_LINE];
+//char cache_pad0[CACHE_LINE];
 
 /*consumer’s local control variables*/
-int localWrite = 0;
-int nextRead = 0;
-int rBatch = 0;
-char cache_pad1[CACHE_LINE - 3 * sizeof(int)];
+static int localWrite = 0;
+static int nextRead = 0;
+static int rBatch = 0;
+//char cache_pad1[CACHE_LINE - 3 * sizeof(int)];
+
 
 /*producer’s local control variables*/
-int localRead = 0;
-int nextWrite = 0;
-int wBatch = 0;
-char cache_pad2[CACHE_LINE - 3 * sizeof(int)];
+static int localRead = 0;
+static int nextWrite = 0;
+static int wBatch = 0;
+//char cache_pad2[CACHE_LINE - 3 * sizeof(int)];
 
 /*constants*/
-int batchSize = 64;
-char cache_pad3[CACHE_LINE - 3 * sizeof(int)];
-
-
-
+static int batchSize = 250;
+//char cache_pad3[CACHE_LINE - 1 * sizeof(int)];
 
 struct buffer_structure {
-    event_t storage[BUFFER_SIZE];
+	event_t storage[BUFFER_SIZE];
 
-    char cache_pad0[CACHE_LINE];
-    volatile int read;
-    volatile int write;
-    char cache_pad1[CACHE_LINE - 2 * sizeof(int)];
+	//char cache_pad0[CACHE_LINE];
+	volatile int read;
+	volatile int write;
+	//char cache_pad1[CACHE_LINE - 2 * sizeof(int)];
 };
+//int producer_waited = 0;
+//int consumer_waited = 0;
 
 /** Allocates & initializes a buffer and returns it to the client.
  * @return buffer
@@ -76,19 +76,21 @@ struct buffer_structure {
 buffer_ptr allocate_buffer() {
 
 	// dummy writes to make sure the compiler is not trying to be smart
-	cache_pad0[0] = 0x0;
-	cache_pad1[0] = 0x0;
-	cache_pad2[0] = 0x0;
-	cache_pad3[0] = 0x0;
-
 	buffer_ptr buffer = malloc( sizeof(buffer_t) );
 
 	if(buffer) {
 		buffer->read = 0;
 		buffer->write = 0;
-
 	}
+	localWrite = 0;
+	nextRead = 0;
+	rBatch = 0;
+	localRead = 0;
+	nextWrite = 0;
+	wBatch = 0;
 
+	//producer_waited = 0;
+	//consumer_waited = 0;
 
     return buffer;
 }
@@ -109,6 +111,7 @@ void produce_event(buffer_ptr buffer, event_t element) {
 	if (afterNextWrite == localRead) {
 		while (afterNextWrite == buffer->read) {
 			/* busy waiting */
+			//producer_waited++;
 		}
 		localRead = buffer->read;
 	}
@@ -124,7 +127,10 @@ void produce_event(buffer_ptr buffer, event_t element) {
 
 }
 
-void produced_last_event(buffer_ptr buffer) {}
+void produced_last_event(buffer_ptr buffer) {
+	buffer->write = nextWrite;
+	//DEBUG_PRINT("\nproducer waited: %d\nconsumer waited: %d\n", producer_waited, consumer_waited);
+}
 
 event_t consume_event(buffer_ptr buffer) {
 	//DEBUG_PRINT("consume\n");
@@ -132,6 +138,7 @@ event_t consume_event(buffer_ptr buffer) {
 	if(nextRead == localWrite) {
 		while(nextRead == buffer->write) {
 			/*busy waiting*/
+			//consumer_waited++;
 		}
 		localWrite = buffer->write;
 	}
