@@ -39,6 +39,8 @@ typedef unsigned int uint;
 // Global Definitions & Variables
 #define CACHE_LINE 64
 #define BUFFER_SIZE 2200
+#define NEXT(current) ((current)+1) % (BUFFER_SIZE);
+
 
 //char cache_pad0[CACHE_LINE];
 
@@ -100,10 +102,6 @@ void free_buffer(buffer_ptr buffer) {
     free(buffer);
 }
 
-int NEXT(int current) {
-	return (current+1) % (BUFFER_SIZE);
-}
-
 void produce_event(buffer_ptr buffer, event_t element) {
 	//DEBUG_PRINT("produce\n");
 
@@ -120,6 +118,7 @@ void produce_event(buffer_ptr buffer, event_t element) {
 
 	nextWrite = afterNextWrite;
 	wBatch++;
+
 	if (wBatch >= batchSize) {
 		buffer->write = nextWrite;
 		wBatch = 0;
