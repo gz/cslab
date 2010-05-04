@@ -38,7 +38,7 @@ typedef unsigned int uint;
 
 // Global Definitions & Variables
 #define CACHE_LINE 64
-#define BUFFER_SIZE 1640
+#define BUFFER_SIZE 900
 
 char cache_pad0[CACHE_LINE];
 
@@ -67,7 +67,7 @@ struct buffer_structure {
     char cache_pad0[CACHE_LINE];
     volatile int read;
     volatile int write;
-    char cachePad1[CACHE_LINE - 2 * sizeof(int)];
+    char cache_pad1[CACHE_LINE - 2 * sizeof(int)];
 };
 
 /** Allocates & initializes a buffer and returns it to the client.
@@ -75,15 +75,18 @@ struct buffer_structure {
  */
 buffer_ptr allocate_buffer() {
 
+	// dummy writes to make sure the compiler is not trying to be smart
+	cache_pad0[0] = 0x0;
+	cache_pad1[0] = 0x0;
+	cache_pad2[0] = 0x0;
+	cache_pad3[0] = 0x0;
+
 	buffer_ptr buffer = malloc( sizeof(buffer_t) );
 
 	if(buffer) {
 		buffer->read = 0;
 		buffer->write = 0;
-		int i;
-		for(i=0; i<BUFFER_SIZE; i++) {
-			//buffer->storage[i] = NULL;
-		}
+
 	}
 
 
