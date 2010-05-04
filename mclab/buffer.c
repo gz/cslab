@@ -1,6 +1,8 @@
 /* Producer & Consumer
  * ====================
- *
+ * The implementation is a lock free shared ring buffer implementation
+ * based on the paper "A Lock-Free, Cache-Efficient Shared Ring Buffer for
+ * Multi-Core Architectures" by Patrick P. C. Lee, Tian Bu, Girish Chandranmenon.
  *
  * Authors
  * ====================
@@ -36,7 +38,7 @@ typedef unsigned int uint;
 
 // Global Definitions & Variables
 #define CACHE_LINE 64
-#define BUFFER_SIZE 512
+#define BUFFER_SIZE 1640
 
 char cache_pad0[CACHE_LINE];
 
@@ -53,9 +55,10 @@ int wBatch = 0;
 char cache_pad2[CACHE_LINE - 3 * sizeof(int)];
 
 /*constants*/
-int blockOnEmpty = 0;
-int batchSize = 20;
+int batchSize = 64;
 char cache_pad3[CACHE_LINE - 3 * sizeof(int)];
+
+
 
 
 struct buffer_structure {
@@ -77,10 +80,9 @@ buffer_ptr allocate_buffer() {
 	if(buffer) {
 		buffer->read = 0;
 		buffer->write = 0;
-
 		int i;
 		for(i=0; i<BUFFER_SIZE; i++) {
-			buffer->storage[i] = NULL;
+			//buffer->storage[i] = NULL;
 		}
 	}
 
@@ -98,11 +100,10 @@ int NEXT(int current) {
 }
 
 void produce_event(buffer_ptr buffer, event_t element) {
-	DEBUG_PRINT("produce\n");
+	//DEBUG_PRINT("produce\n");
 
 	int afterNextWrite = NEXT(nextWrite);
 	if (afterNextWrite == localRead) {
-		DEBUG_PRINT("waiting until afterNextWrite:%d != buffer->read:%d...\n", afterNextWrite, buffer->read);
 		while (afterNextWrite == buffer->read) {
 			/* busy waiting */
 		}
@@ -110,6 +111,7 @@ void produce_event(buffer_ptr buffer, event_t element) {
 	}
 
 	buffer->storage[nextWrite] = element;
+
 	nextWrite = afterNextWrite;
 	wBatch++;
 	if (wBatch >= batchSize) {
@@ -119,26 +121,22 @@ void produce_event(buffer_ptr buffer, event_t element) {
 
 }
 
-void produced_last_event(buffer_ptr buffer) {
-	produce_event(buffer, NULL);
-}
+void produced_last_event(buffer_ptr buffer) {}
 
 event_t consume_event(buffer_ptr buffer) {
-	DEBUG_PRINT("consume\n");
+	//DEBUG_PRINT("consume\n");
 
 	if(nextRead == localWrite) {
-		DEBUG_PRINT("waiting until nextRead:%d != buffer->write:%d...\n", nextRead, buffer->write);
 		while(nextRead == buffer->write) {
 			/*busy waiting*/
-
 		}
 		localWrite = buffer->write;
 	}
 
 	event_t element = buffer->storage[nextRead];
 	nextRead = NEXT(nextRead);
-	rBatch++;
 
+	rBatch++;
 	if(rBatch >= batchSize) {
 		buffer->read = nextRead;
 		rBatch = 0;

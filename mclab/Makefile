@@ -1,4 +1,4 @@
-CFLAGS=-O3 -g
+CFLAGS=-O1 -g
 HFILES=$(wildcard *.h)
 OFILES=main.o dummy_buffer.o buffer.o
 
