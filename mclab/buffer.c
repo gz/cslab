@@ -38,36 +38,38 @@ typedef unsigned int uint;
 
 // Global Definitions & Variables
 #define CACHE_LINE 64
-#define BUFFER_SIZE 2200
+#define BUFFER_SIZE 1024
 #define NEXT(current) ((current)+1) % (BUFFER_SIZE);
 
 
-//char cache_pad0[CACHE_LINE];
-
 /*consumer’s local control variables*/
-static int localWrite = 0;
-static int nextRead = 0;
-static int rBatch = 0;
-//char cache_pad1[CACHE_LINE - 3 * sizeof(int)];
+struct consumer {
+	int localWrite;
+	int nextRead;
+	int rBatch;
+	char padding[CACHE_LINE-3*sizeof(int)];
+} c;
 
 
 /*producer’s local control variables*/
-static int localRead = 0;
-static int nextWrite = 0;
-static int wBatch = 0;
-//char cache_pad2[CACHE_LINE - 3 * sizeof(int)];
+struct producer {
+	int localRead;
+	int nextWrite;
+	int wBatch;
+	char padding[CACHE_LINE-3*sizeof(int)];
+} p;
 
 /*constants*/
-static int batchSize = 250;
-//char cache_pad3[CACHE_LINE - 1 * sizeof(int)];
+static int batchSize = 128;
+static char cache_pad3[CACHE_LINE - 1 * sizeof(int)];
 
 struct buffer_structure {
 	event_t storage[BUFFER_SIZE];
 
-	//char cache_pad0[CACHE_LINE];
+	char cache_pad0[CACHE_LINE];
 	volatile int read;
 	volatile int write;
-	//char cache_pad1[CACHE_LINE - 2 * sizeof(int)];
+	char cache_pad1[CACHE_LINE - 2 * sizeof(int)];
 };
 //int producer_waited = 0;
 //int consumer_waited = 0;
@@ -77,6 +79,7 @@ struct buffer_structure {
  */
 buffer_ptr allocate_buffer() {
 
+
 	// dummy writes to make sure the compiler is not trying to be smart
 	buffer_ptr buffer = malloc( sizeof(buffer_t) );
 
@@ -84,12 +87,12 @@ buffer_ptr allocate_buffer() {
 		buffer->read = 0;
 		buffer->write = 0;
 	}
-	localWrite = 0;
-	nextRead = 0;
-	rBatch = 0;
-	localRead = 0;
-	nextWrite = 0;
-	wBatch = 0;
+	c.localWrite = 0;
+	c.nextRead = 0;
+	c.rBatch = 0;
+	p.localRead = 0;
+	p.nextWrite = 0;
+	p.wBatch = 0;
 
 	//producer_waited = 0;
 	//consumer_waited = 0;
@@ -105,50 +108,50 @@ void free_buffer(buffer_ptr buffer) {
 void produce_event(buffer_ptr buffer, event_t element) {
 	//DEBUG_PRINT("produce\n");
 
-	int afterNextWrite = NEXT(nextWrite);
-	if (afterNextWrite == localRead) {
+	int afterNextWrite = NEXT(p.nextWrite);
+	if (afterNextWrite == p.localRead) {
 		while (afterNextWrite == buffer->read) {
 			/* busy waiting */
 			//producer_waited++;
 		}
-		localRead = buffer->read;
+		p.localRead = buffer->read;
 	}
 
-	buffer->storage[nextWrite] = element;
+	buffer->storage[p.nextWrite] = element;
 
-	nextWrite = afterNextWrite;
-	wBatch++;
+	p.nextWrite = afterNextWrite;
+	p.wBatch++;
 
-	if (wBatch >= batchSize) {
-		buffer->write = nextWrite;
-		wBatch = 0;
+	if (p.wBatch >= batchSize) {
+		buffer->write = p.nextWrite;
+		p.wBatch = 0;
 	}
 
 }
 
 void produced_last_event(buffer_ptr buffer) {
-	buffer->write = nextWrite;
+	buffer->write = p.nextWrite;
 	//DEBUG_PRINT("\nproducer waited: %d\nconsumer waited: %d\n", producer_waited, consumer_waited);
 }
 
 event_t consume_event(buffer_ptr buffer) {
 	//DEBUG_PRINT("consume\n");
 
-	if(nextRead == localWrite) {
-		while(nextRead == buffer->write) {
+	if(c.nextRead == c.localWrite) {
+		while(c.nextRead == buffer->write) {
 			/*busy waiting*/
 			//consumer_waited++;
 		}
-		localWrite = buffer->write;
+		c.localWrite = buffer->write;
 	}
 
-	event_t element = buffer->storage[nextRead];
-	nextRead = NEXT(nextRead);
+	event_t element = buffer->storage[c.nextRead];
+	c.nextRead = NEXT(c.nextRead);
 
-	rBatch++;
-	if(rBatch >= batchSize) {
-		buffer->read = nextRead;
-		rBatch = 0;
+	c.rBatch++;
+	if(c.rBatch >= batchSize) {
+		buffer->read = c.nextRead;
+		c.rBatch = 0;
 	}
 
 	return element;
