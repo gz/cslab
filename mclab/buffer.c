@@ -24,21 +24,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <assert.h>
 
 #include "buffer.h"
 
 
-// Some basic types & macros
-typedef int boolean;
-#define TRUE 1
-#define FALSE 0
-typedef unsigned int uint;
-
-
 // Macro for Debugging
-#define DEBUG 1
+#define DEBUG 0
 #ifdef DEBUG
 	#define DEBUG_PRINT(fmt, args...)    fprintf(stderr, fmt, ## args)
 #else
@@ -48,14 +40,15 @@ typedef unsigned int uint;
 
 // Global Definitions & Variables
 #define CACHE_LINE 64 		// cache line is 64 bytes (this can vary from cpu to cpu)
-#define BUFFER_SIZE 1024 	// buffer size (we tried multiples of 2 and took the one which gave us the best results)
-#define BATCH_SIZE 128		// batch size, this means that buffer->head/tail are only updated every 128 inserts/updates
+#define BUFFER_SIZE 1024 	// we tried multiples of 2 and took the one which gave us the best results
+#define BATCH_SIZE 128		// this means that buffer->head/tail are only updated every `BATCH_SIZE` inserts/updates
 							// (we tried multiples of 2 and took the one which gave us the best results)
 #define NEXT(current) ((current)+1) % (BUFFER_SIZE); // returns the next element in a circular buffer of size BUFFER_SIZE
 
 
-/**
- * Variables used by the consumer.
+/** Variables used by the consumer.
+ * Note: We could also put these variables into the buffer struct but for
+ *       readability we split them up into separate structs.
  **/
 static struct consumer {
 	int local_head;		// is always <= buffer->head
@@ -65,8 +58,9 @@ static struct consumer {
 } c;
 
 
-/**
- * Variables used by the producer.
+/** Variables used by the producer.
+ *  Note: We could also put these variables into the buffer struct but for
+ *        readability we split them up into separate structs.
  **/
 static struct producer {
 	int local_tail;		// is always <= buffer->tail
@@ -76,15 +70,14 @@ static struct producer {
 } p;
 
 
-/**
- * Buffer structure contains the data and the shared variables between
- * the producer and consumer.
- * Please note that head and tail do not actually have to correspond to the real
- * head and tail values since we update them only after BATCH_SIZE read/writes
- * to the buffer.
- * Head and tail are marked as volatile since they're shared between
- * the producer and consumer and it is vital that they're written
- * back to memory every time they change.
+/** Buffer structure contains the data and the shared variables between
+ *  the producer and consumer.
+ *  Please note that head and tail do not actually have to correspond to the real
+ *  head and tail values since we update them only after BATCH_SIZE read/writes
+ *  to the buffer.
+ *  Head and tail are marked as volatile since they're shared between
+ *  the producer and consumer and it is vital that they're written
+ *  back to memory every time they change.
  */
 struct buffer_structure {
 	event_t storage[BUFFER_SIZE];
@@ -97,7 +90,8 @@ struct buffer_structure {
 
 
 /** Allocates & initializes a buffer and returns it to the client.
- * @return buffer
+ *  Initializes global variables for producer & consumer.
+ *  @return buffer
  */
 buffer_ptr allocate_buffer() {
 
@@ -120,11 +114,20 @@ buffer_ptr allocate_buffer() {
 }
 
 
+/** Cleans up allocated `buffer` memory.
+ */
 void free_buffer(buffer_ptr buffer) {
     free(buffer);
 }
 
 
+/** Inserts an element in the buffer.
+ *   - Waits until there is space to insert
+ *   - Element is written at p.next_head
+ *   - Updates buffer->head after BATCH_SIZE writes
+ *  @param buffer data work with
+ *  @param element which will be inserted
+ */
 void produce_event(buffer_ptr buffer, event_t element) {
 
 	int after_next_write = NEXT(p.next_head);
@@ -149,11 +152,25 @@ void produce_event(buffer_ptr buffer, event_t element) {
 }
 
 
+/** Marks the end of calls to produce_event from the producer.
+ *   - Makes sure buffer->head is correct.
+ *   - Writes NULL as last element in buffer.
+ *  @param buffer data work with
+ */
 void produced_last_event(buffer_ptr buffer) {
-	buffer->head = p.next_head;
+	produce_event(buffer, NULL);
+	buffer->head = p.next_head; // make sure head is correct, so producer won't block
 }
 
 
+/** Consumes one event from the buffer.
+ *   - Waits until something can be consumed
+ *   - Reads element at current tail position (c.next_tail)
+ *   - Updates buffer->tail after BATCH_SIZE consume calls
+ *  @param buffer data to work with
+ *  @return event at buffer position or NULL if last element has
+ *  been returned one call before
+ */
 event_t consume_event(buffer_ptr buffer) {
 
 	if(c.next_tail == c.local_head) {
