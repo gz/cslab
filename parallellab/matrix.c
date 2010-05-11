@@ -1,19 +1,17 @@
-/* 
- * matrix.c - Matrix computations that should be optimized by the students
- * 
- * Copyright (c) 2007-2010 ETH Zurich, All rights reserved
- * Author: Mathias Payer <mathias.payer@inf.ethz.ch>, 
- * 
- * Only change these two functions and try to make them as fast as possible
- * on the given multi-core machine.
+/* LU Decomposition:
+ * ====================
+ * - general description/optimization
+ * - some speedup measurements
+ * - hostname used to obtain these results hostname --fqdn
  *
- * Include here a description of your optimizations and the members
- * names and email addresses of your team.
+ * Authors:
+ * ====================
+ * team07:
+ * Boris Bluntschli (borisb@student.ethz.ch)
+ * Gerd Zellweger (zgerd@student.ethz.ch)
  *
- * Provide some speedup measurements and briefly discuss them. Specify
- * the hostname of the computer that you used to obtain these results
- * (the output of 'hostname --fqdn', e.g., rifpc22.inf.ethz.ch).
  */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,10 +22,23 @@
  * @param matrix pointer to the matrix
  * @param size   size of the matrix
  */
-void decompose_matrix(double *matrix, int size)
-{
-  /* in situ LU decomposition */
-  /* use parallelism */
+void decompose_matrix(double* matrix, int size) {
+
+	int k, j, i;
+	for(k=0; k < size; k++) {
+
+		for(j=k+1; j < size; j++) {
+			matrix[k*size+j] = matrix[k*size+j] / matrix[k*size+k];
+		}
+
+		for(i=k+1; i<size; i++) {
+			for(j=k+1; j<size; j++) {
+				matrix[i*size+j] = matrix[i*size+j] - matrix[i*size+k] * matrix[k*size+j];
+			}
+		}
+
+	}
+
 }
 
 /** 
@@ -39,7 +50,8 @@ void decompose_matrix(double *matrix, int size)
  */
 int check_matrix(double *lu, double *matrix, int size)
 {
-  /* return l*u == matrix */
-  /* use parallelism! */
-  return  1;
+	/* return l*u == matrix */
+	/* use parallelism! */
+
+	return  1;
 }
