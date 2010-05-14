@@ -1,6 +1,6 @@
-CC = gcc
+CC = gcc-4
 CFLAGS = -Wall -g -O3 -fopenmp
-LDFLAGS = -lgomp -lm
+LDFLAGS = -fopenmp -lgomp -lm
 
 OBJS = parallel.o matrix.o
 
