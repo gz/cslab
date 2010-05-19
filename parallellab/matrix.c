@@ -12,7 +12,14 @@
  *
  */
 
+// <config>
 
+#define ENABLE_PARALLELIZATION
+#define NUM_THREADS 2
+
+// </config>
+ 
+ 
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -26,17 +33,22 @@
  * @param size   size of the matrix
  */
 void decompose_matrix(double* matrix, int size) {
+    omp_set_num_threads(NUM_THREADS);
+
 	int k, i;
+    
 	for(k=0; k < size; k++) {
 
 		int j;
 		double divisor = matrix[index(k, k)];
-		#pragma omp parallel for
+        #pragma omp for
+        // (k, k+1) to (k, size-1)
 		for(j=k+1; j < size; j++) {
 			matrix[index(k, j)] = matrix[index(k, j)] / divisor;
 		}
 
-		#pragma omp parallel for
+		#pragma omp for nowait
+        // (k+1, k+1) to (size-1, size-1)
 		for(i=k+1; i<size; i++) {
 			int j;
 			for(j=k+1; j<size; j++) {
@@ -90,6 +102,8 @@ inline int check_matrix_entry(double *lu, double *matrix, int size, int i, int j
  * @return       true if l*u=matrix, false otherwise
  */
 int check_matrix(double *lu, double *matrix, int size) {
+    omp_set_num_threads(NUM_THREADS);
+
 	int result = 1;
 
 	int i;
@@ -97,6 +111,7 @@ int check_matrix(double *lu, double *matrix, int size) {
 	#pragma omp parallel for reduction(&: result)
 	for(i = 0; i < size; ++i) {
 		int j;
+        #pragma omp for
 		for(j = 0; j < size; ++j) {
 			result &= check_matrix_entry(lu, matrix, size, i, j);
 		}
