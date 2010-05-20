@@ -15,7 +15,7 @@
 // <config>
 
 #define ENABLE_PARALLELIZATION
-#define NUM_THREADS 2
+#define NUM_THREADS 1
 
 // </config>
  
@@ -35,23 +35,21 @@
 void decompose_matrix(double* matrix, int size) {
     omp_set_num_threads(NUM_THREADS);
 
-	int k, i;
+	int i, j, k;
     
 	for(k=0; k < size; k++) {
 
-		int j;
 		double divisor = matrix[index(k, k)];
 
 		// (k, k+1) to (k, size-1)
-        #pragma omp parallel for
+        #pragma omp parallel for schedule(static, 64) private(i, j)
 		for(j=k+1; j < size; j++) {
 			matrix[index(k, j)] = matrix[index(k, j)] / divisor;
 		}
 
         // (k+1, k+1) to (size-1, size-1)
-		#pragma omp parallel for schedule(static, 64)
+		#pragma omp parallel for schedule(static, 64) private(i, j)
 		for(i=k+1; i<size; i++) {
-			int j;
 			for(j=k+1; j<size; j++) {
 				matrix[index(i, j)] = matrix[index(i, j)] - matrix[index(i, k)] * matrix[index(k, j)];
 			}
