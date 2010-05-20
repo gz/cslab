@@ -41,14 +41,15 @@ void decompose_matrix(double* matrix, int size) {
 
 		int j;
 		double divisor = matrix[index(k, k)];
-        #pragma omp for
-        // (k, k+1) to (k, size-1)
+
+		// (k, k+1) to (k, size-1)
+        #pragma omp parallel for
 		for(j=k+1; j < size; j++) {
 			matrix[index(k, j)] = matrix[index(k, j)] / divisor;
 		}
 
-		#pragma omp for nowait
         // (k+1, k+1) to (size-1, size-1)
+		#pragma omp parallel for schedule(static, 64)
 		for(i=k+1; i<size; i++) {
 			int j;
 			for(j=k+1; j<size; j++) {
