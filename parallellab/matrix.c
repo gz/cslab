@@ -105,18 +105,20 @@ inline int check_matrix_entry(double *lu, double *matrix, int size, int i, int j
 int check_matrix(double *lu, double *matrix, int size) {
     omp_set_num_threads(NUM_THREADS);
 
-	int result = 1;
-
-	int i;
-
-	#pragma omp parallel for reduction(&: result)
-	for(i = 0; i < size; ++i) {
-		int j;
-        #pragma omp for
-		for(j = 0; j < size; ++j) {
-			result &= check_matrix_entry(lu, matrix, size, i, j);
-		}
-	}
-
+    int result = 1;
+	
+    {
+        int i, j, r;
+        #pragma omp parallel for schedule(static, 1) private(i, j, r)
+        for(i = 0; i < size; ++i) {
+            r = 1;
+            for(j = 0; j < size; ++j) {
+                r &= check_matrix_entry(lu, matrix, size, i, j);
+            }
+            if(!r) {
+                result = 0;
+            }
+        }
+    }
 	return result;
 }
