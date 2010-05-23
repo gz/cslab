@@ -38,11 +38,14 @@ size=512
 
 
 
+0.35 0.35
+0.55, 0.55
+
  */
 
 // <config>
 
-#define NUM_THREADS 2
+#define NUM_THREADS 1
 
 // </config>
  
