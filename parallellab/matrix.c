@@ -35,28 +35,40 @@
 void decompose_matrix(double* matrix, int size) {
     omp_set_num_threads(NUM_THREADS);
 
-	int i, j, k;
+	int i, j, k, k2;
     
-	for(k=0; k < size; k++) {
+    {
+        for(k=0; k < size; k++) {
+            #pragma omp parallel
+            {
+                
+                
+                {
+                    
+                    {
+                        // (k, k+1) to (k, size-1)
+                        double divisor = matrix[index(k, k)];
+                        k2 = k;
+                        #pragma omp for nowait schedule(static, 64) private(i, j)
+                        for(j=k+2; j < size; j++) {
+                            matrix[index(k, j)] = matrix[index(k, j)] / divisor;
+                        }
+                    }
 
-		double divisor = matrix[index(k, k)];
-
-		// (k, k+1) to (k, size-1)
-        #pragma omp parallel for schedule(static, 64) private(i, j)
-		for(j=k+1; j < size; j++) {
-			matrix[index(k, j)] = matrix[index(k, j)] / divisor;
-		}
-
-        // (k+1, k+1) to (size-1, size-1)
-		#pragma omp parallel for schedule(static, 64) private(i, j)
-		for(i=k+1; i<size; i++) {
-			for(j=k+1; j<size; j++) {
-				matrix[index(i, j)] = matrix[index(i, j)] - matrix[index(i, k)] * matrix[index(k, j)];
-			}
-		}
-
-	}
-
+                    // (k+1, k+1) to (size-1, size-1)
+                    {
+                        k2 = k;
+                        #pragma omp for schedule(static, 64) private(i, j)
+                        for(i=k+1; i<size; i++) {
+                            for(j=k+1; j<size; j++) {
+                                matrix[index(i, j)] = matrix[index(i, j)] - matrix[index(i, k)] * matrix[index(k, j)];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
