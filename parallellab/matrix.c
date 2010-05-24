@@ -10,42 +10,57 @@
  * Gerd Zellweger (zgerd@student.ethz.ch)
  * Boris Bluntschli (borisb@student.ethz.ch)
  *
+
+* Speedup measurements were done on a Q6660 @ 2.40 GHz (QuadCore)
  
-decompose_matrix 
-================
-size=1024
-------------------------------
-1 thread:  1.45s                [1.45, 1.49, 1.42]
-2 threads: 1.01s (143% speedup) [0.92, 1.12, 1.00]
-4 threads: 1.30s (111% speedup) [1.23, 1.38, 1.31] 
 
- 
-check_matrix (blocked implementation)
-============
-------------------------------
-size=1024
-------------------------------
-1 thread:  3.23s [3.76, 3.92, 3.73]
-2 threads: 2.02s [2.00, 2.33, 1.94] (159% speedup)
-4 threads: 1.94s (166% speedup)
+==================
+DECOMPOSITION
+==================
 
+decompose (1000 x 1000)
 ------------------------------
-size=512
+1 thread:  1.01, 0.98, 0.98
+2 threads: 0.39, 0.49, 0.35
+4 threads: 0.45, 0.30, 0.53
+
+decompose (2000 x 2000)
 ------------------------------
-1 thread:  3.23s [3.76, 3.92, 3.73]
-2 threads: 2.02s [2.00, 2.33, 1.94] (159% speedup)
-4 threads: 1.94s (166% speedup)
+1 thread:  11.03, 10.94
+2 threads: 11.42
+4 threads: 
 
 
+=================
+CHECKING
+=================
 
-0.35 0.35
-0.55, 0.55
+checking (1000 x 1000)
+----------------------
+           normal                blocked
+1 thread:  1.89  1.8   1.84      1.65  1.65  1.66
+2 threads: 0.9   0.94  0.97      0.85  0.85  0.87
+4 threads: 0.49  0.54  0.68      0.49  0.47  0.46
+
+checking (2000 x 2000)
+----------------------
+           normal           blocked
+1 thread:  18.56 18.48      17.35 17.57
+2 threads: 9.73  10.05      8.85  8.86
+4 threads: 5.48  5.68       4.85  4.91
+
+For checking, we achieve an almost linear speedup. Instead of parallelizing one of the loops (outer or inner), we decided to 
+use striping and run an index over all the fields of the matrix that we have to check. This seemed to yield better results in the
+settings that we tested. We also implemented a blocked implementation (check_matrix_blocked), which yielded slightly better results.
+
+If we look at the implementation of both methods, they are both *theoretically* completely parallelized, but of course there are problems
+as there exists contention for the cache.
 
  */
 
 // <config>
 
-#define NUM_THREADS 1
+#define NUM_THREADS 4
 
 // </config>
  
@@ -63,34 +78,111 @@ size=512
  * @param size   size of the matrix
  */
 void decompose_matrix(double* matrix, int size) {
+  int i,ii,ii_max,j, k, kk,kk_max,counter = 0;
+
+    register double temp_reg1, temp_reg2;
+
+    for (k = 0; k < size - 1; k=k+2)
+    {
+            kk_max=k+2-1;
+        if(size-1<kk_max)
+        kk_max=size-1;
+
+
+       for(kk=k;kk<=kk_max;kk++)
+       {
+        if(matrix[index(k, k)]==0)
+        {
+        printf("ERROR, A[k][k]=0\n");
+        exit(0);
+        }
+
+        else
+        {  
+          for (j = kk + 1; j < size; j++)	//Obtain column entries of diagonal under consideration
+        {
+
+          matrix[index(kk, j)] = matrix[index(kk, j)] / matrix[index(kk, kk)];
+        }
+        }//else..divide only when A[k][k]!=0
+        
+
+    #pragma omp parallel for
+
+        for(i=kk+1;i<=kk_max;i++)
+        {
+          for(j=kk+1;j<size;j++)
+          {
+
+            matrix[index(i, j)] -= (matrix[index(i, kk)]*matrix[index(kk, j)]);
+          }//j
+            }//i
+        
+
+
+      }//kk
+
+
+    #pragma omp parallel for
+          for (i =kk_max+1; i<size; i++)	//Take each row of active matrix
+        {
+
+              temp_reg1=matrix[index(i, k)];
+              temp_reg2=matrix[index(i, k+1)];
+
+
+
+        for (j =k+1; j < size; j++)	//Take each column of active row picked up in above iteration..IMP j=kk+1
+        {
+            
+            if(j>=kk_max+1)
+            {
+
+            matrix[index(i, j)] -= (temp_reg1*matrix[index(k, j)]);
+            matrix[index(i, j)] -= (temp_reg2*matrix[index(k+1, j)]);
+            
+            
+            }//if
+
+            else  //only true for B=2
+            {
+            
+            matrix[index(i, j)] -= (temp_reg1*matrix[index(k, j)]);
+            temp_reg2=matrix[index(i, j)];		//update A[i][k]
+            
+            }//else
+            
+
+        }//j
+
+       }//i
+
+      }//for of k			//selecting each diagonal ends
+
+    }			//Method LU ends 
+ 
+void decompose_matrixxx(double* matrix, int size) {
     omp_set_num_threads(NUM_THREADS);
 
 	int k, i;
     
 	for(k=0; k < size; k++) {
-
-		int j;
-		double divisor = matrix[index(k, k)];
-
 		// (k, k+1) to (k, size-1)
-		for(j=k+1; j < size; j++) {
-			matrix[index(k, j)] = matrix[index(k, j)] / divisor;
-		}
-
+        double pivot = matrix[index(k, k)];
+        #pragma omp parallel for
+        for(i=k+1; i < size; ++i) {
+            matrix[index(k, i)] = matrix[index(k, i)] / pivot;        
+        }
+        
         // (k+1, k+1) to (size-1, size-1)
-		#pragma omp parallel for private(i, j)
+		#pragma omp parallel for
 		for(i=k+1; i<size; i++) {
 			int j;
-            double d = matrix[index(i, k)];
-			for(j=k+1; j<size; j++) {
-				matrix[index(i, j)] = matrix[index(i, j)] - d * matrix[index(k, j)];
-                
-                
+			for(j = k + 1; j < size; j += 1) {
+				matrix[index(i, j)] -= matrix[index(i, k)] * matrix[index(k, j)];
 			}
 		}
-
 	}
-
 }
 
 /**
@@ -125,7 +217,7 @@ inline int check_matrix_entry(double *lu, double *matrix, int size, int i, int j
 	}
 
 	double diff = result - matrix[index(i, j)];
-    
+    printf("%f\n", diff);
 	return abs(diff) == 0.0;
 }
 
@@ -140,18 +232,15 @@ int check_matrix(double *lu, double *matrix, int size) {
     omp_set_num_threads(NUM_THREADS);
 
     int result = 1;
-	
     {
-        int i, j, r;
-        #pragma omp parallel for schedule(static, 1) private(i, j, r)
-        for(i = 0; i < size; ++i) {
-            r = 1;
-            for(j = 0; j < size; ++j) {
-                r &= check_matrix_entry(lu, matrix, size, i, j);
-            }
-            if(!r) {
+        int pos;
+        #pragma omp parallel for schedule(static, 1) private(pos)
+        for(pos = 0; pos < size*size; ++pos)
+        {
+            int i = pos % size;
+            int j = pos / size;
+            if(!check_matrix_entry(lu, matrix, size, i, j))
                 result = 0;
-            }
         }
     }
 	return result;

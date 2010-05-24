@@ -1,4 +1,4 @@
-CC = gcc
+CC = gcc-4
 CFLAGS = -Wall -g -O3 -fopenmp
 LDFLAGS = -fopenmp -lgomp -lm
 
