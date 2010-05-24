@@ -129,7 +129,7 @@ inline int check_matrix_entry(double *lu, double *matrix, int size, int i, int j
 	}
 
 	double diff = result - matrix[index(i, j)];
-    printf("%f\n", diff);
+    
 	return abs(diff) == 0.0;
 }
 
